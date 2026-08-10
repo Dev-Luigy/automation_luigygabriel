@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#102a43">
+    <title>Expense Agent · Review operations</title>
+    <link rel="stylesheet" href="/assets/reviews.css">
+    <script type="module" src="/assets/reviews.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#worklist" data-i18n="skipToWorklist">Skip to review worklist</a>
+
+    <header class="topbar">
+      <div class="brand" aria-label="Expense Agent">
+        <span class="brand-mark" aria-hidden="true">EA</span>
+        <span class="brand-copy">
+          <strong>Expense Agent</strong>
+          <small data-i18n="brandSubtitle">Human review workspace</small>
+        </span>
+      </div>
+
+      <div class="topbar-context" aria-label="Current workspace" data-i18n-aria-label="workspaceLabel">
+        <span class="context-dot" aria-hidden="true"></span>
+        <span data-i18n="reviewQueueNav">Review queue</span>
+      </div>
+
+      <div class="topbar-actions">
+        <label class="language-control" for="language-select">
+          <span data-i18n="language">Language</span>
+          <select id="language-select" aria-label="Language" data-i18n-aria-label="language">
+            <option value="pt-BR">Português</option>
+            <option value="en">English</option>
+            <option value="es">Español</option>
+          </select>
+        </label>
+        <div class="reviewer" aria-label="Authenticated reviewer" data-i18n-aria-label="authenticatedReviewer">
+          <span class="secure-dot" aria-hidden="true"></span>
+          <span>
+            <small data-i18n="signedInAs">Signed in as</small>
+            <strong id="reviewer-name">Loading identity…</strong>
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow" data-i18n="operationsEyebrow">Financial operations</p>
+          <h1 id="page-title" data-i18n="pageTitle">Review operations</h1>
+          <p data-i18n="pageDescription">Find the right case quickly, compare evidence, and record an accountable decision.</p>
+        </div>
+        <div class="page-actions">
+          <span id="last-updated" class="last-updated" aria-live="polite"></span>
+          <button id="refresh-queue" class="button button-secondary button-with-icon" type="button" aria-keyshortcuts="R">
+            <span aria-hidden="true">↻</span>
+            <span data-i18n="refresh">Refresh</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="metrics-grid" aria-label="Queue overview" data-i18n-aria-label="queueOverview">
+        <article class="metric-card metric-primary">
+          <div class="metric-icon" aria-hidden="true">Σ</div>
+          <div>
+            <span data-i18n="totalPending">Total pending</span>
+            <strong id="metric-total">—</strong>
+            <small id="metric-total-note" data-i18n="allPendingCases">All pending cases</small>
+          </div>
+        </article>
+        <article class="metric-card metric-warning">
+          <div class="metric-icon" aria-hidden="true">!</div>
+          <div>
+            <span data-i18n="urgentPending">Waiting over 24h</span>
+            <strong id="metric-urgent">—</strong>
+            <small data-i18n="oldestFirstHint">Prioritize the oldest cases</small>
+          </div>
+        </article>
+        <article class="metric-card metric-neutral">
+          <div class="metric-icon" aria-hidden="true">$</div>
+          <div>
+            <span data-i18n="highValue">High value</span>
+            <strong id="metric-high-value">—</strong>
+            <small id="metric-high-value-note" data-i18n="configuredThreshold">Configured threshold</small>
+          </div>
+        </article>
+        <article class="metric-card metric-danger">
+          <div class="metric-icon" aria-hidden="true">≠</div>
+          <div>
+            <span data-i18n="amountMismatch">Amount mismatch</span>
+            <strong id="metric-mismatch">—</strong>
+            <small data-i18n="claimedVsExtracted">Claimed versus extracted</small>
+          </div>
+        </article>
+      </section>
+
+      <section id="worklist" class="worklist-panel" aria-labelledby="worklist-title">
+        <div class="worklist-heading">
+          <div>
+            <p class="eyebrow" data-i18n="worklistEyebrow">Operational worklist</p>
+            <h2 id="worklist-title" tabindex="-1" data-i18n="pendingCases">Pending cases</h2>
+          </div>
+          <div class="view-switcher" role="group" aria-label="View" data-i18n-aria-label="view">
+            <button id="table-view-button" class="view-button is-active" type="button" aria-pressed="true">
+              <span aria-hidden="true">☷</span>
+              <span data-i18n="tableView">Table</span>
+            </button>
+            <button id="card-view-button" class="view-button" type="button" aria-pressed="false">
+              <span aria-hidden="true">▦</span>
+              <span data-i18n="cardView">Cards</span>
+            </button>
+          </div>
+        </div>
+
+        <form id="filter-form" novalidate>
+          <div class="query-toolbar">
+            <label class="search-field" for="search-input">
+              <span class="visually-hidden" data-i18n="searchLabel">Search pending cases</span>
+              <span aria-hidden="true">⌕</span>
+              <input
+                id="search-input"
+                name="search"
+                type="search"
+                autocomplete="off"
+                aria-keyshortcuts="/"
+                placeholder="Request ID, submitter, or merchant"
+                data-i18n-placeholder="searchPlaceholder"
+              >
+              <kbd aria-hidden="true">/</kbd>
+            </label>
+
+            <button id="filter-toggle" class="button button-secondary filter-toggle" type="button" aria-expanded="false" aria-controls="filter-panel">
+              <span aria-hidden="true">≡</span>
+              <span data-i18n="filters">Filters</span>
+              <span id="filter-count" class="filter-count" hidden>0</span>
+            </button>
+
+            <label class="compact-field" for="sort-select">
+              <span data-i18n="sortBy">Sort by</span>
+              <select id="sort-select" name="sort">
+                <option value="pending_oldest" data-i18n="sortOldest">Waiting longest</option>
+                <option value="pending_newest" data-i18n="sortNewest">Recently pending</option>
+                <option value="amount_desc" data-i18n="sortAmountDesc">Highest amount</option>
+                <option value="amount_asc" data-i18n="sortAmountAsc">Lowest amount</option>
+                <option value="submitted_newest" data-i18n="sortSubmittedNewest">Recently submitted</option>
+              </select>
+            </label>
+
+            <label class="compact-field page-size-field" for="page-size-select">
+              <span data-i18n="rows">Rows</span>
+              <select id="page-size-select" name="limit">
+                <option value="10">10</option>
+                <option value="25" selected>25</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+            </label>
+          </div>
+
+          <div id="filter-panel" class="filter-panel" hidden>
+            <div class="filter-grid">
+              <label>
+                <span data-i18n="category">Category</span>
+                <input id="category-filter" name="category" type="text" list="category-options" autocomplete="off" placeholder="All categories or exact code" data-i18n-placeholder="allCategoriesOrCode">
+                <datalist id="category-options">
+                  <option value="client_meal" data-i18n-label="categoryClientMeal"></option>
+                  <option value="meals" data-i18n-label="categoryMeals"></option>
+                  <option value="lodging" data-i18n-label="categoryLodging"></option>
+                  <option value="transport" data-i18n-label="categoryTransport"></option>
+                  <option value="office_supplies" data-i18n-label="categoryOfficeSupplies"></option>
+                  <option value="other" data-i18n-label="categoryOther"></option>
+                </datalist>
+              </label>
+
+              <label>
+                <span data-i18n="problemType">Problem type</span>
+                <input id="problem-filter" name="problem_code" type="text" list="problem-options" autocomplete="off" placeholder="All problems or exact code" data-i18n-placeholder="allProblemsOrCode">
+                <datalist id="problem-options">
+                  <option value="AMOUNT_MISMATCH" data-i18n-label="problemAmountMismatch"></option>
+                  <option value="TOTAL_MISMATCH" data-i18n-label="problemTotalMismatch"></option>
+                  <option value="CATEGORY_MISMATCH" data-i18n-label="problemCategoryMismatch"></option>
+                  <option value="LOW_OCR_CONFIDENCE" data-i18n-label="problemLowOcr"></option>
+                  <option value="DUPLICATE_RECEIPT" data-i18n-label="problemDuplicate"></option>
+                  <option value="POLICY_LIMIT_EVIDENCE" data-i18n-label="problemPolicyEvidence"></option>
+                </datalist>
+              </label>
+
+              <fieldset class="amount-range">
+                <legend data-i18n="claimedAmountRange">Claimed amount</legend>
+                <label>
+                  <span data-i18n="minimum">Minimum</span>
+                  <span class="money-input"><span aria-hidden="true">R$</span><input id="min-amount-filter" name="min_amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0,00"></span>
+                </label>
+                <label>
+                  <span data-i18n="maximum">Maximum</span>
+                  <span class="money-input"><span aria-hidden="true">R$</span><input id="max-amount-filter" name="max_amount" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0,00"></span>
+                </label>
+              </fieldset>
+
+              <fieldset class="date-range">
+                <legend data-i18n="submittedRange">Submitted date</legend>
+                <label>
+                  <span data-i18n="from">From</span>
+                  <input id="submitted-from-filter" name="submitted_from" type="date">
+                </label>
+                <label>
+                  <span data-i18n="to">To</span>
+                  <input id="submitted-to-filter" name="submitted_to" type="date">
+                </label>
+              </fieldset>
+
+              <label>
+                <span data-i18n="pendingAge">Pending age</span>
+                <select id="age-filter" name="age_bucket">
+                  <option value="" data-i18n="anyAge">Any age</option>
+                  <option value="under_4h" data-i18n="ageUnder4h">Under 4 hours</option>
+                  <option value="4h_to_24h" data-i18n="age4to24h">4 to 24 hours</option>
+                  <option value="over_24h" data-i18n="ageOver24h">Over 24 hours</option>
+                </select>
+              </label>
+            </div>
+            <div class="filter-actions">
+              <p id="filter-validation" class="validation-message" role="alert" hidden></p>
+              <button id="reset-filters" class="button button-quiet" type="button" data-i18n="resetAll">Reset all</button>
+              <button class="button button-primary" type="submit" data-i18n="applyFilters">Apply filters</button>
+            </div>
+          </div>
+        </form>
+
+        <div id="active-filters" class="active-filters" aria-label="Active filters" data-i18n-aria-label="activeFilters" hidden>
+          <span class="active-filters-label" data-i18n="activeFilters">Active filters</span>
+          <div id="filter-chips" class="filter-chips"></div>
+          <button id="clear-active-filters" class="text-button" type="button" data-i18n="clearAll">Clear all</button>
+        </div>
+
+        <div id="queue-loading" class="queue-state loading-state" role="status">
+          <span class="spinner" aria-hidden="true"></span>
+          <strong data-i18n="loadingQueue">Loading review queue…</strong>
+          <span data-i18n="loadingQueueHint">This may take a moment for complex filters.</span>
+        </div>
+
+        <div id="queue-error" class="queue-state error-state" role="alert" hidden>
+          <span class="state-icon" aria-hidden="true">!</span>
+          <strong data-i18n="queueErrorTitle">The queue could not be loaded</strong>
+          <p id="queue-error-message" data-i18n="queueErrorMessage">Check your connection and try again.</p>
+          <button id="retry-queue" class="button button-secondary" type="button" data-i18n="tryAgain">Try again</button>
+        </div>
+
+        <div id="queue-empty" class="queue-state empty-state" hidden>
+          <span class="state-icon" aria-hidden="true">✓</span>
+          <strong id="queue-empty-title" data-i18n="queueClearTitle">The queue is clear</strong>
+          <p id="queue-empty-message" data-i18n="queueClearMessage">There are no reimbursements waiting for review.</p>
+          <button id="empty-reset-filters" class="button button-secondary" type="button" data-i18n="resetFilters" hidden>Reset filters</button>
+        </div>
+
+        <div id="queue-results" hidden>
+          <div id="table-view" class="table-view">
+            <div class="table-wrap">
+              <table class="queue-table">
+                <caption class="visually-hidden" data-i18n="queueTableCaption">Pending reimbursements matching the current query</caption>
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="request">Request</th>
+                    <th scope="col" data-i18n="submitter">Submitter</th>
+                    <th scope="col" data-i18n="merchant">Merchant</th>
+                    <th scope="col" data-i18n="category">Category</th>
+                    <th scope="col" class="numeric" data-i18n="claimed">Claimed</th>
+                    <th scope="col" data-i18n="primaryProblem">Primary problem</th>
+                    <th scope="col" data-i18n="pendingSince">Pending since</th>
+                    <th scope="col" data-i18n="status">Status</th>
+                    <th scope="col"><span class="visually-hidden" data-i18n="actions">Actions</span></th>
+                  </tr>
+                </thead>
+                <tbody id="queue-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <ol id="card-view" class="case-card-grid" hidden></ol>
+
+          <footer class="pagination-bar">
+            <p id="page-summary" aria-live="polite"></p>
+            <div class="pagination-actions">
+              <button id="previous-page" class="button button-secondary" type="button" disabled>
+                <span aria-hidden="true">←</span>
+                <span data-i18n="previous">Previous</span>
+              </button>
+              <span id="page-number" class="page-number"></span>
+              <button id="next-page" class="button button-secondary" type="button" disabled>
+                <span data-i18n="next">Next</span>
+                <span aria-hidden="true">→</span>
+              </button>
+            </div>
+          </footer>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="case-dialog" class="case-drawer" aria-labelledby="case-title">
+      <div class="drawer-shell">
+        <header class="drawer-header">
+          <div>
+            <p class="eyebrow"><span data-i18n="reimbursement">Reimbursement</span> <span id="request-id"></span></p>
+            <h2 id="case-title" data-i18n="reviewEvidence">Review evidence</h2>
+            <p id="case-submitted"></p>
+          </div>
+          <div class="drawer-header-actions">
+            <span id="case-status" class="status-pill">—</span>
+            <button id="close-case" class="icon-button" type="button" aria-label="Close details" data-i18n-aria-label="closeDetails" title="Close" data-i18n-title="close">×</button>
+          </div>
+        </header>
+
+        <div id="detail-loading" class="detail-state" role="status" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <strong data-i18n="loadingDetails">Loading case evidence…</strong>
+        </div>
+
+        <div id="detail-error" class="detail-state error-state" role="alert" hidden>
+          <span class="state-icon" aria-hidden="true">!</span>
+          <strong data-i18n="detailErrorTitle">Case details could not be loaded</strong>
+          <p id="detail-error-message" data-i18n="detailErrorMessage">Try opening the case again.</p>
+          <button id="retry-detail" class="button button-secondary" type="button" data-i18n="tryAgain">Try again</button>
+        </div>
+
+        <div id="case-content" class="drawer-content" hidden>
+          <nav class="detail-nav" aria-label="Case sections" data-i18n-aria-label="caseSections">
+            <a href="#comparison-section" data-i18n="comparison">Comparison</a>
+            <a href="#problems-section" data-i18n="problems">Problems</a>
+            <a href="#evidence-section" data-i18n="evidence">Evidence</a>
+            <a href="#rules-section" data-i18n="rules">Rules</a>
+            <a href="#timeline-section" data-i18n="businessTimeline">Business timeline</a>
+            <a href="#decision-panel" data-i18n="decision">Decision</a>
+          </nav>
+
+          <section class="case-metadata" aria-label="Claim summary" data-i18n-aria-label="claimSummary">
+            <div>
+              <span data-i18n="submittedBy">Submitted by</span>
+              <strong id="submitted-by">—</strong>
+            </div>
+            <div>
+              <span data-i18n="policyVersion">Policy version</span>
+              <strong id="policy-version">—</strong>
+            </div>
+            <div>
+              <span data-i18n="attachmentCount">Attachments</span>
+              <strong id="attachment-count-summary">—</strong>
+            </div>
+            <div>
+              <span data-i18n="pendingSince">Pending since</span>
+              <strong id="case-pending-since">—</strong>
+            </div>
+          </section>
+
+          <section id="comparison-section" class="evidence-section prominent-section" aria-labelledby="comparison-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow" data-i18n="decisionSnapshot">Decision snapshot</p>
+                <h3 id="comparison-title" data-i18n="claimedExtractedComparison">Claimed vs. extracted</h3>
+              </div>
+              <p class="section-help" data-i18n="comparisonHint">Comparison indicators assist review; policy remains authoritative.</p>
+            </div>
+            <div class="table-wrap">
+              <table class="comparison-table">
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="field">Field</th>
+                    <th scope="col" data-i18n="claimed">Claimed</th>
+                    <th scope="col" data-i18n="extracted">Extracted</th>
+                    <th scope="col" data-i18n="comparison">Comparison</th>
+                  </tr>
+                </thead>
+                <tbody id="comparison-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="problems-section" class="evidence-section" aria-labelledby="problems-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow" data-i18n="whyReview">Why human judgment is needed</p>
+                <h3 id="problems-title" data-i18n="detectedProblems">Detected problems</h3>
+              </div>
+              <span id="problem-count" class="count-chip">0</span>
+            </div>
+            <ul id="problem-list" class="problem-list"></ul>
+          </section>
+
+          <div id="evidence-section" class="evidence-columns">
+            <section class="evidence-section" aria-labelledby="ocr-title">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow" data-i18n="sourceEvidence">Source evidence</p>
+                  <h3 id="ocr-title" data-i18n="ocrOutput">OCR output</h3>
+                </div>
+                <span class="original-language-badge" data-i18n="originalLanguage">Original language</span>
+              </div>
+              <pre id="ocr-text" class="ocr-text"></pre>
+            </section>
+
+            <section class="evidence-section" aria-labelledby="facts-title">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow" data-i18n="normalizedObject">Normalized object</p>
+                  <h3 id="facts-title" data-i18n="extractedReceipt">Extracted receipt</h3>
+                </div>
+              </div>
+              <dl id="facts-list" class="facts-list"></dl>
+            </section>
+          </div>
+
+          <section id="rules-section" class="evidence-section" aria-labelledby="rules-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow" data-i18n="deterministicPolicy">Deterministic policy</p>
+                <h3 id="rules-title" data-i18n="ruleEvaluations">Rule evaluations</h3>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="rule">Rule</th>
+                    <th scope="col" data-i18n="version">Version</th>
+                    <th scope="col" data-i18n="result">Result</th>
+                    <th scope="col" data-i18n="explanation">Explanation</th>
+                  </tr>
+                </thead>
+                <tbody id="rules-body"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section
+            id="timeline-section"
+            class="evidence-section business-timeline-section"
+            aria-labelledby="timeline-title"
+            aria-describedby="timeline-help"
+            aria-busy="false"
+          >
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow" data-i18n="businessTimelineEyebrow">Immutable business history</p>
+                <h3 id="timeline-title" data-i18n="businessTimeline">Business timeline</h3>
+              </div>
+              <span id="timeline-count" class="count-chip">0</span>
+            </div>
+            <p id="timeline-help" class="timeline-help" data-i18n="businessTimelineHelp">Business events are shown separately from the protected technical trace.</p>
+
+            <div id="timeline-loading" class="timeline-state" role="status" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <strong data-i18n="loadingTimeline">Loading business timeline…</strong>
+            </div>
+
+            <div id="timeline-error" class="timeline-state timeline-error" role="alert" hidden>
+              <span class="state-icon" aria-hidden="true">!</span>
+              <div>
+                <strong data-i18n="timelineErrorTitle">The business timeline could not be loaded</strong>
+                <p id="timeline-error-message" data-i18n="timelineErrorMessage">Try loading the business events again.</p>
+                <button id="retry-timeline" class="button button-secondary button-small" type="button" data-i18n="retryTimeline">Retry timeline</button>
+              </div>
+            </div>
+
+            <div id="timeline-empty" class="timeline-state timeline-empty" role="status" hidden>
+              <span class="state-icon" aria-hidden="true">○</span>
+              <div>
+                <strong data-i18n="timelineEmptyTitle">No business events recorded</strong>
+                <p data-i18n="timelineEmptyMessage">This case does not have events available to this reviewer.</p>
+              </div>
+            </div>
+
+            <div id="timeline-content" hidden>
+              <ol id="timeline-list" class="business-timeline-list" aria-live="polite"></ol>
+              <div class="timeline-pagination">
+                <button id="timeline-load-more" class="button button-secondary button-small" type="button" data-i18n="loadMoreEvents" hidden>Load more events</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="evidence-section" aria-labelledby="attachments-title">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow" data-i18n="originalFiles">Original files</p>
+                <h3 id="attachments-title" data-i18n="attachments">Attachments</h3>
+              </div>
+              <span id="attachment-count" class="count-chip">0</span>
+            </div>
+            <div class="limitation-notice" role="note">
+              <span aria-hidden="true">i</span>
+              <p data-i18n="attachmentLimitation">This assessment records file references only. Authorized preview and download are not implemented yet.</p>
+            </div>
+            <ul id="attachment-list" class="attachment-list"></ul>
+          </section>
+
+          <section id="decision-panel" class="decision-panel" aria-labelledby="decision-title">
+            <div class="decision-copy">
+              <p class="eyebrow" data-i18n="authoritativeAction">Authoritative human action</p>
+              <h3 id="decision-title" data-i18n="recordDecision">Record your decision</h3>
+              <p data-i18n="decisionAuditNotice">Your authenticated identity, rationale, timestamp, and case version will be written to the immutable audit trail.</p>
+            </div>
+            <label for="decision-reason">
+              <span data-i18n="rationale">Rationale</span>
+              <span class="required-label" data-i18n="required">required</span>
+            </label>
+            <textarea id="decision-reason" maxlength="2000" rows="5" placeholder="Explain the evidence and reasoning behind your decision." data-i18n-placeholder="rationalePlaceholder"></textarea>
+            <div class="decision-meta">
+              <span data-i18n="rationaleHint">Do not include passwords, tokens, or unrelated personal data.</span>
+              <span id="reason-counter">0 / 2000</span>
+            </div>
+            <div class="decision-actions">
+              <button id="reject-button" class="button button-danger" type="button" data-outcome="rejected" data-i18n="rejectReimbursement">Reject reimbursement</button>
+              <button id="approve-button" class="button button-success" type="button" data-outcome="approved" data-i18n="approveReimbursement">Approve reimbursement</button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-title">
+      <form method="dialog">
+        <div id="confirm-icon" class="confirm-icon" aria-hidden="true">✓</div>
+        <p class="eyebrow" data-i18n="finalConfirmation">Final confirmation</p>
+        <h2 id="confirm-title" data-i18n="confirmDecision">Confirm decision</h2>
+        <p id="confirm-copy"></p>
+        <p class="immutability-warning" data-i18n="immutableWarning">This decision cannot be edited after it is recorded.</p>
+        <div class="dialog-actions">
+          <button class="button button-secondary" value="cancel" data-i18n="goBack">Go back</button>
+          <button id="confirm-button" class="button button-success" value="confirm" data-i18n="confirmAndRecord">Confirm and record</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <div id="announcer" class="visually-hidden" role="status" aria-live="polite"></div>
+  </body>
+</html>
