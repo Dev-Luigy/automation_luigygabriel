@@ -20,9 +20,33 @@ from expense_agent.application.review import (
     ReviewRepository,
     ReviewService,
 )
+from expense_agent.application.workflow import (
+    ExtractionSnapshot,
+    InvocationStatus,
+    InvocationSummary,
+    ProcessingOutcome,
+    ProcessingRunStatus,
+    ProcessingRunSummary,
+    ProcessingService,
+    RequestConflictError,
+    RequestNotFoundError,
+    RequestResult,
+    WorkflowRepository,
+    submission_fingerprint,
+)
 
 __all__ = [
+    "ExtractionSnapshot",
+    "InvocationStatus",
+    "InvocationSummary",
     "PendingAgeBucket",
+    "ProcessingOutcome",
+    "ProcessingRunStatus",
+    "ProcessingRunSummary",
+    "ProcessingService",
+    "RequestConflictError",
+    "RequestNotFoundError",
+    "RequestResult",
     "ReviewBusinessEvent",
     "ReviewCaseDetails",
     "ReviewCaseStatus",
@@ -40,4 +64,6 @@ __all__ = [
     "ReviewRepository",
     "ReviewService",
     "ReviewerIdentity",
+    "WorkflowRepository",
+    "submission_fingerprint",
 ]
