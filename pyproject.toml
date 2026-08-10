@@ -33,5 +33,8 @@ addopts = "-q"
 line-length = 100
 target-version = "py311"
 
+[tool.hatch.build]
+exclude = ["/tmp"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/expense_agent"]

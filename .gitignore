@@ -11,4 +11,5 @@ __pycache__/
 data/
 build/
 dist/
+tmp/
 *.egg-info/
