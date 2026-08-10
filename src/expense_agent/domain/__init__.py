@@ -20,6 +20,14 @@ from expense_agent.domain.extraction import (
     ModelInvocationTrace,
     ReceiptFacts,
 )
+from expense_agent.domain.policy import (
+    AUTO_APPROVAL_LIMIT,
+    BASELINE_POLICY_VERSION,
+    BASELINE_RULE_VERSION,
+    HIGH_VALUE_LIMIT,
+    MAX_RECEIPT_AGE_DAYS,
+    BaselinePolicy,
+)
 from expense_agent.domain.reimbursement import (
     AttachmentReference,
     ReimbursementCase,
@@ -29,10 +37,16 @@ from expense_agent.domain.reimbursement import (
 from expense_agent.domain.value_objects import Currency, Money
 
 __all__ = [
+    "AUTO_APPROVAL_LIMIT",
+    "BASELINE_POLICY_VERSION",
+    "BASELINE_RULE_VERSION",
+    "HIGH_VALUE_LIMIT",
+    "MAX_RECEIPT_AGE_DAYS",
     "AttachmentReference",
     "AuditActor",
     "AuditEvent",
     "AutomatedDecision",
+    "BaselinePolicy",
     "Currency",
     "DecisionReason",
     "DomainValidationError",
