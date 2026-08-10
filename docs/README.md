@@ -1,131 +1,135 @@
 # Expense Agent documentation
 
-These documents describe the repository as implemented. Each page explicitly
-separates executable assessment behavior from production replacements and from
-features that remain outside the current slice.
+This documentation describes the executable assessment, the deliberately
+limited boundaries, and the accepted but unimplemented AWS production target.
+Status labels are used consistently:
 
-## Documentation map
+- **Implemented:** executable and covered by automated tests.
+- **Partial:** a useful assessment slice exists but lacks a production control
+  or user surface.
+- **Target:** accepted production direction, not built in this repository.
+- **Open:** requires accountable product, security, legal, finance, or platform
+  input.
+
+## Reading map
 
 ```mermaid
 flowchart LR
-    Start["Start here"] --> Architecture["Architecture and trust boundaries"]
-    Start --> Domain["Domain and application objects"]
-    Start --> Database["SQLite schema and transaction"]
-    Start --> Features["Reviewer features and API flows"]
-    Start --> UX["Standalone UX, scale, and localization"]
-    Start --> AWS["Accepted AWS target and costs"]
-    Architecture --> Decisions["Decision log"]
-    Domain --> Decisions
+    Start["README / local demo"] --> Report["Final report"]
+    Report --> Architecture["Architecture"]
+    Report --> Features["Features and APIs"]
+    Architecture --> Domain["Domain model"]
+    Architecture --> Database["Database and transactions"]
+    Domain --> Decisions["Decision log"]
     Database --> Decisions
-    Features --> Journal["Chronological project journal"]
-    AWS --> Decisions
-    Decisions --> Report["Final report outline"]
-    Journal --> Report
+    Features --> UX["UX and localization"]
+    Decisions --> Journal["Project journal"]
+    Journal --> Time["Time log"]
+    Architecture --> AWS["AWS target and cost study"]
 ```
 
 | Document | Purpose |
 | --- | --- |
-| [System architecture](architecture.md) | Runtime components, code boundaries, trust boundaries, and current versus production responsibilities. |
-| [Domain object model](domain-model.md) | Aggregate, extraction, review, decision, identity, and audit objects with their invariants. |
-| [Database model](database.md) | The implemented normalized SQLite schema, immutable records, and atomic decision algorithm. |
-| [Feature catalog](features.md) | Screen behavior, endpoints, security controls, test evidence, and known gaps. |
-| [Standalone UX, scale, and localization](ux-and-localization.md) | Role-specific surfaces, high-volume queue navigation, localization boundaries, and usability validation. |
-| [Accepted AWS serverless target and cost study](aws-deployment-study.md) | CloudFront/Cognito/API Gateway/Lambda/SQS/S3/Aurora target, evaluated EKS alternative, VPN, retention, compression, and parametric São Paulo cost analysis. |
-| [Project journal](project-journal.md) | Chronological questions, feedback, implementation results, and validation. |
-| [Decision log](decision-log.md) | Accepted, open, proposed, and superseded architecture decisions. |
-| [Assumptions register](assumptions.md) | Explicit interpretations that still require production validation. |
-| [Final report outline](final-report-outline.md) | Evidence-backed structure for the final assignment report. |
-| [Time log](time-log.md) | Recorded work areas and honest unknown durations. |
+| [Final report](final-report.md) | Concise assignment narrative, compliance matrix, evidence, trade-offs, and roadmap. |
+| [System architecture](architecture.md) | Executable components, dependency direction, trust boundaries, processing flow, and AWS replacement boundary. |
+| [Database model](database.md) | SQLite schema, cardinalities, idempotency, version transitions, immutable traces, and atomic writes. |
+| [Domain model](domain-model.md) | Reimbursement, extraction, policy, workflow, review, identity, and audit objects and invariants. |
+| [Feature catalog](features.md) | Intake/results APIs, review console, policy behavior, security, errors, and verification. |
+| [UX and localization](ux-and-localization.md) | High-volume queue design and PT-BR/EN/ES presentation boundaries. |
+| [AWS deployment and cost study](aws-deployment-study.md) | Accepted hybrid serverless target, storage/cost sensitivities, and rejected EKS alternative. |
+| [Decision log](decision-log.md) | Current, proposed, open, and superseded architecture decisions. |
+| [Project journal](project-journal.md) | Chronological questions, feedback, implementation results, and rationale. |
+| [Assumptions register](assumptions.md) | Explicit interpretations and validation needs. |
+| [Time log](time-log.md) | Real recorded work window plus honestly unrecorded earlier work. |
+| [Report outline](final-report-outline.md) | Earlier planning artifact retained for history; superseded by the final report. |
 
-## Implementation status
+## Current implementation status
 
 ```mermaid
 flowchart TB
     subgraph Implemented["Implemented and tested"]
-        Domain["Domain objects and state machine"]
-        ReviewApp["ReviewService and repository port"]
-        SQLite["Normalized SQLite review and audit persistence"]
-        HTTP["Authenticated FastAPI JSON endpoints"]
-        UI["Trilingual operations console\nfilters + detail + business timeline"]
-        Security["PBKDF2 Basic adapter, CSRF, ETag, browser headers"]
-        Tooling["Password helper and deterministic demo seed"]
+        Intake["Authenticated strict intake"]
+        Workflow["Synchronous processing service"]
+        Offline["Offline deterministic extractor"]
+        Policy["Deterministic baseline policy"]
+        Result["All-status exact-ID result API"]
+        Queue["Paginated reviewer console"]
+        Review["Atomic human decision"]
+        Trace["1:N processing attempts + scoped events"]
+        SQLite["SQLite assessment repository"]
+        CI["Pinned test/lint/build CI"]
     end
 
-    subgraph Partial["Modeled or deliberately limited"]
-        Extraction["Extraction result and complete model trace"]
-        AuditScope["Two-event reviewer timeline only"]
-        Attachment["Attachment references, not content delivery"]
-        Auth["Assessment authentication adapter"]
+    subgraph Partial["Partial assessment boundaries"]
+        HTTPProvider["Optional HTTPS+JSON extractor\nimplemented, not composed by default"]
+        Attachment["Attachment references only"]
+        Identity["HTTP Basic/PBKDF2 assessment identity"]
+        UI["Reviewer UI only\nno submitter/audit UI"]
+        Execution["Synchronous only"]
     end
 
-    subgraph Planned["Not implemented"]
-        SubmitterUI["Standalone submitter portal"]
-        Intake["Submission intake API"]
-        OCR["OCR/LLM provider adapter"]
-        Policy["Baseline deterministic policy engine"]
-        AuditAdminUI["Audit / administration surface"]
-        ProductionIdentity["Accepted Cognito/BFF identity target"]
-        ProductionRuntime["Accepted AWS serverless runtime target"]
-        ProductionData["Accepted Aurora/S3/outbox target"]
+    subgraph Target["Accepted production target — not implemented"]
+        Edge["CloudFront/WAF + private S3 shell"]
+        Cognito["Cognito + opaque BFF session"]
+        Lambda["API Gateway + Lambda + SQS/DLQ"]
+        Evidence["Versioned private S3 evidence"]
+        Aurora["Aurora PostgreSQL + RDS Proxy + outbox"]
+        Archive["Immutable approved audit archive"]
     end
 
-    UI --> HTTP --> ReviewApp --> Domain
-    ReviewApp --> SQLite
-    Extraction --> SQLite
-    SubmitterUI -. future .-> Intake
-    Intake -. future .-> Domain
-    OCR -. future .-> Extraction
-    Policy -. future .-> Domain
-    AuditAdminUI -. future .-> ProductionData
-    ProductionIdentity -. replaces .-> Auth
-    ProductionData -. replaces or extends .-> SQLite
-    ProductionRuntime -. deploys .-> HTTP
+    Intake --> Workflow --> Offline --> Policy --> Result
+    Policy --> Queue --> Review
+    Workflow --> Trace --> SQLite
+    Queue --> SQLite
+    HTTPProvider -. replaceable adapter .-> Offline
+    Edge -. production replacement .-> UI
+    Cognito -. production replacement .-> Identity
+    Lambda -. production replacement .-> Execution
+    Aurora -. production replacement .-> SQLite
+    Evidence -. production completion .-> Attachment
+    Aurora --> Archive
 
-    classDef implemented fill:#dcfce7,stroke:#15803d,color:#14532d
+    classDef done fill:#dcfce7,stroke:#15803d,color:#14532d
     classDef partial fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef planned fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-dasharray: 5 5
-    class Domain,ReviewApp,SQLite,HTTP,UI,Security,Tooling implemented
-    class Extraction,AuditScope,Attachment,Auth partial
-    class SubmitterUI,Intake,OCR,Policy,AuditAdminUI,ProductionIdentity,ProductionRuntime,ProductionData planned
+    classDef target fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-dasharray:5 5
+    class Intake,Workflow,Offline,Policy,Result,Queue,Review,Trace,SQLite,CI done
+    class HTTPProvider,Attachment,Identity,UI,Execution partial
+    class Edge,Cognito,Lambda,Evidence,Aurora,Archive target
 ```
 
-Status terminology:
+## Assignment coverage
 
-- **Implemented:** present in executable code and covered by automated tests.
-- **Partial:** a usable slice exists, but its production scope is intentionally
-  narrower than the full service requirement.
-- **Planned:** required for a complete end-to-end production service but absent
-  from this repository.
+| Requirement | Status | Evidence / boundary |
+| --- | --- | --- |
+| Receive reimbursement requests | **Implemented** | Strict authenticated `POST /api/requests`; normalized submission persisted at v1. |
+| Extract receipt information | **Implemented for supplied OCR text** | Default offline parser plus optional bounded HTTPS+JSON adapter; receipt-byte OCR is not implemented. |
+| Validate receipt and claim | **Implemented** | Versioned deterministic amount, category, currency, age, quality, and threshold rules. |
+| Auto-approve eligible requests at or below BRL 200 | **Implemented** | Only when every rule passes. |
+| Review requests above BRL 2,000 | **Implemented interpretation** | All claims above BRL 200 route to review; `> 2,000` has a distinct reason. The literal threshold/collision policy still needs stakeholder validation. |
+| Reject receipts older than 90 days | **Implemented interpretation** | Age uses the caller-supplied submission date in `America/Sao_Paulo`; exactly 90 is valid; rejection currently wins over review. Both the authoritative timestamp and collision precedence block production until validated/corrected. |
+| Explain and trace every operation | **Partial** | Processing/decision trace is implemented with input hashes, runs, 1:N attempts, rules, scoped events, and human rationale. Authentication success/failure, reads, searches, validation/orchestration errors, and evidence-access audit are not comprehensively recorded. |
+| Human judgment and recorded reviewer | **Implemented** | Internal UI/API, server-derived assessment identity, mandatory rationale, atomic v3→v4 transaction. |
+| Safe high-volume review navigation | **Implemented contract; unproven production SLO** | Database-scoped search/filter/sort and signed keyset cursors; no million-row load test or PostgreSQL adapter. |
+| Original receipt access | **Not implemented** | Only caller-supplied attachment references are stored/displayed. |
+| Standalone submitter experience | **API only** | Intake/result endpoints exist; no upload/tracking web screen. |
+| AWS serverless deployment | **Target only** | Architecture and cost study exist; no IaC, account, deployment, Cognito, Aurora, S3, or SQS adapter. |
 
-## Assignment coverage snapshot
+## Verification snapshot
 
-Option 2 completes the Human Review slice, not the full assignment:
+- 140/140 automated tests passed with warnings treated as errors in the final
+  local run.
+- Ruff, JavaScript syntax validation, and `git diff --check` passed.
+- Acceptance tests preserve the three assignment objects and expected routes:
+  `REQ-0001` and `REQ-0002` auto-approved, `REQ-0003` pending review.
+- Boundary tests cover BRL 200.00, 200.01, 2,000.00, 2,000.01, exactly 90
+  days, and an old high-value collision.
+- Integration tests cover real FastAPI → processing → SQLite behavior,
+  idempotent replay, payload conflict, extraction exception, rollback, human
+  v3→v4 decision, safe serialization, and 1:N immutable attempts.
+- The GitHub Actions workflow uses commit-pinned actions, frozen/pinned Python
+  build inputs, and runs tests, Ruff, and package build on pushes/pull requests;
+  monthly Dependabot updates cover pip and Actions dependencies.
 
-| PDF requirement | Status in this repository |
-| --- | --- |
-| Receive and process reimbursement requests | Not implemented; there is no intake endpoint or processing orchestrator. |
-| OCR/AI extraction and validation | Partial contract and persisted trace; no live provider adapter. |
-| Auto-approve eligible requests at or below BRL 200 | Planned; no baseline policy executor. |
-| Always review requests above BRL 2,000 | Planned; the domain route exists but no amount rule runs. |
-| Reject receipts older than 90 days | Planned; the age rule and precedence are not implemented. |
-| Classify and explain every request | Partial; objects/persistence exist for supplied cases, not an end-to-end classifier. |
-| Human review with recorded reviewer decision | Implemented for the internal review slice. |
-| Full traceability | Partial; enqueue and decision lifecycle events are durable and available through a sanitized reviewer timeline, while the authoritative intake/provider/policy pipeline, technical 1:N trace, access audit, and original-file integrity path are absent. |
-
-## Quality snapshot
-
-- Python 3.11 or newer.
-- FastAPI and Uvicorn runtime; SQLite and security primitives use the Python
-  standard library.
-- 60 automated tests passing in the latest recorded run.
-- Ruff static check passing in the latest recorded run.
-- Browser validation: PT-BR/English/Spanish, category filtering, table/cards,
-  evidence detail, 10 + 6 item cursor pages without overlap, and one decision
-  returning HTTP 201; the queue/KPIs refreshed, the audit-event toast appeared,
-  and no console errors were observed.
-- Timeline validation: authenticated HTTP contract, whitelist projection,
-  decision-to-event integration, tamper-resistant request/limit/purpose-bound
-  cursors, restart-safe pagination, safe DOM wiring, and trilingual catalog
-  parity. No new manual browser run was performed for this increment.
-- Packaging validation: `uv build` produced sdist and wheel; the wheel contains
-  all three static review assets and three CLI entry points.
+This evidence validates the assessment behavior. It does not establish a
+production accuracy rate, million-request latency SLO, disaster-recovery
+objective, legal retention period, or cloud security approval.

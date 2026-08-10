@@ -88,22 +88,26 @@ or architecture action in this repository.
 
 ## Current completeness boundary
 
-- The implemented executable is the internal human-review slice: authenticated
-  queue/detail reads and an atomic approve/reject command.
-- Do not claim that the whole assignment is complete yet. Request intake, the
-  baseline policy engine, and the OCR/LLM orchestration are not implemented.
+- The implemented assessment executable now covers authenticated request intake,
+  deterministic receipt-text extraction, the baseline policy, all three
+  automated routes, exact all-status lookup, the internal review queue, and an
+  atomic approve/reject command.
+- The default extractor is an offline deterministic parser for the supplied OCR
+  text. A bounded HTTPS/JSON provider adapter exists, but no live model provider
+  is configured and binary OCR itself remains outside the assessment input
+  boundary.
 - Attachment storage locations are persisted and shown, but authenticated file
   download/preview is not implemented.
-- The current detail API/UI exposes a separate, sanitized, cursor-paginated
-  business timeline for the two implemented review-lifecycle events. It does
-  not render the protected technical trace or cover intake, OCR/model attempts,
-  retries, reprocessing, evidence reads, or administrative events. The current
-  `model_invocation_traces` shape supports only one invocation per request and
-  must become one-to-many before OCR, multiple models, retries, or reprocessing
-  are implemented.
-- No employee/submitter portal or submission-status API is implemented yet.
-  They are now required standalone product surfaces, not integrations with an
-  unknown external client channel.
+- The detail UI exposes a sanitized, cursor-paginated business timeline covering
+  intake, processing start, automated routing, review enqueue, and human
+  decision where applicable. Immutable 1:N processing attempts and separate
+  technical/security events are persisted but deliberately have no normal
+  reviewer API or UI. Reprocessing, evidence reads, and administrative events
+  remain outside the implemented flow.
+- An authenticated intake API and exact all-status result API are implemented.
+  A non-technical employee upload/tracking portal and controlled audit/admin UI
+  are still standalone product surfaces to build; do not represent the JSON API
+  alone as those user experiences.
 - SQLite and HTTP Basic are assessment adapters. A production deployment still
   needs its standalone highly available datastore and managed OIDC service.
 - The AWS hybrid serverless topology is the accepted production target, but no

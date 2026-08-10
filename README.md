@@ -1,100 +1,173 @@
 # Expense Agent
 
-Expense Agent is an auditable Python service for corporate reimbursement
-decisions. The implemented assessment slice provides a non-technical internal
-review console: FastAPI serves one HTML/CSS/vanilla-JavaScript screen, the
-browser calls authenticated same-origin JSON endpoints, and SQLite records the
-human decision, case transition, and audit event atomically.
+Expense Agent is an auditable Python service that receives reimbursement
+requests, extracts receipt facts, applies a deterministic financial policy, and
+routes exceptional cases to an internal human-review console.
 
-Financial state transitions remain deterministic and isolated from the web and
-database adapters. OCR/LLM objects preserve evidence and invocation metadata,
-but no model is the authority for a monetary decision.
+The repository now contains a complete synchronous assessment path:
 
-## What is implemented
+```mermaid
+flowchart LR
+    Client["Authenticated caller"] -->|"POST /api/requests"| API["FastAPI"]
+    API --> Workflow["ProcessingService"]
+    Workflow --> Extractor["Offline deterministic extractor"]
+    Extractor --> Policy["BaselinePolicy v1"]
+    Policy -->|"eligible"| Auto["Auto-approved"]
+    Policy -->|"old receipt"| Rejected["Rejected"]
+    Policy -->|"uncertain / > BRL 200"| Queue["Pending human review"]
+    Queue --> UI["Trilingual review console"]
+    Workflow --> SQLite["SQLite state + immutable trace"]
+    UI --> SQLite
+```
 
-- Exact BRL money through `Decimal` and a protected `ReimbursementCase` state
-  machine.
-- A bounded pending-review queue with server-side search, filters, five stable
-  sort modes, 10–100 item cursor pages, KPI overview, table/cards, and a focused
-  evidence view; attachment content access remains a documented gap.
-- A trilingual reviewer interface (`pt-BR`, English, and Spanish) that localizes
-  presentation while preserving original OCR and free-text evidence.
-- A separate sanitized business timeline with chronological keyset pagination,
-  actor/correlation metadata, and explicit loading, error, empty, retry, and
-  load-more states. Its current coverage is enqueue and human decision only.
-- Approve/reject actions with a mandatory rationale and server-derived reviewer
-  identity.
-- Optimistic concurrency through `ETag`/`If-Match`, plus a serialized SQLite
-  transaction for the final write.
-- Immutable human decisions and append-only audit events enforced by database
-  triggers.
-- Assessment authentication with HTTP Basic and PBKDF2 password hashes, CSRF
-  defense, same-origin enforcement, restrictive browser headers, and production
-  HTTPS enforcement.
-- Demo fixtures, password-hash tooling, and automated tests.
+The model/extractor is evidence-producing infrastructure, never the authority
+for money. `BaselinePolicy` is deterministic, versioned, and explainable.
 
-The intake API, OCR/provider adapter, and baseline policy engine are not yet
-implemented. Demo cases enter the system after the automated decision has
-already routed them to human review. See the [documentation index](docs/README.md)
-for the exact implemented/partial/production boundary.
+## Implemented scope
 
-The accepted production target is a standalone AWS hybrid serverless stack:
-CloudFront/WAF and private S3 for the shell, API Gateway and Python Lambda for
-the service, Cognito plus a server-side opaque session for identity, SQS for
-asynchronous work, versioned S3 for evidence, and Aurora PostgreSQL Serverless
-v2 through RDS Proxy for authoritative state, audit, and transactional outbox.
-That cloud target is documented but not implemented or deployed; HTTP Basic
-and SQLite remain the executable assessment adapters.
+- Strict authenticated intake through `POST /api/requests`.
+- Exact-ID, all-status results through `GET /api/requests/{request_id}`.
+- Idempotency by `request_id` plus a canonical SHA-256 submission fingerprint:
+  the same normalized payload replays the stored result; a different payload
+  under the same ID returns `409 Conflict`.
+- Synchronous processing with visible versions: `received` v1, `processing` v2,
+  automated final route v3, and human decision v4.
+- A deterministic offline receipt parser for the assignment input shape and a
+  separately configurable, bounded HTTPS+JSON extractor adapter.
+- Baseline BRL policy with exact `Decimal` money, 90-day age validation in
+  `America/Sao_Paulo`, amount/category consistency checks, and explicit reason
+  codes plus rule evaluations.
+- One-to-many immutable processing attempts with provider/model/prompt/input/
+  output hashes, timing, parameters, protected raw response, and status.
+- Business, technical, and security audit-event scopes. The normal reviewer
+  timeline exposes only a sanitized business projection.
+- Server-side searched, filtered, sorted, cursor-paginated pending queue; table,
+  cards, detail view, and Portuguese/English/Spanish presentation.
+- Atomic human approve/reject with mandatory rationale, server-derived actor,
+  `ETag`/`If-Match`, immutable decision, status transition, and audit event.
+- HTTP Basic/PBKDF2, CSRF, exact-origin checks, restrictive browser headers,
+  HTTPS enforcement outside explicitly configured local development, and CI.
 
-## Local demonstration
+The assessment deliberately does **not** implement receipt-byte upload or
+download, a submitter portal, a privileged audit UI, asynchronous queues, or
+AWS infrastructure. Attachment strings are references only. SQLite and HTTP
+Basic are local assessment adapters.
 
-Requires Python 3.11 or newer and `uv`.
+Release gates prevent real monetary use: the caller currently supplies the
+timestamp that anchors receipt age; the caller supplies OCR text without a
+checksum-bound original file and controlled OCR; every configured Basic account
+has global scope without object authorization or separation of duties; not all
+authentication/read/search/error/access operations are audited; and a crash can
+leave processing v2 stranded without recovery. The
+[final report](docs/final-report.md) treats these as production blockers, not
+optional polish.
+
+## Run locally
+
+Requirements: Python 3.11+ and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync --all-groups
 uv run expense-agent-hash-password
 ```
 
-Copy `.env.example` to a local, ignored `.env`, replace the reviewer hash and
-CSRF secret, and use these local-only values:
-
-```text
-EXPENSE_AGENT_REQUIRE_HTTPS=false
-EXPENSE_AGENT_ALLOWED_HOSTS=localhost,127.0.0.1
-EXPENSE_AGENT_HOST=127.0.0.1
-EXPENSE_AGENT_PORT=8000
-```
-
-The application deliberately does not load `.env` files itself. Export the
-variables with your shell or process manager, then seed and run it:
+The password helper asks for a local password and prints a PBKDF2 hash. Export
+the following values in the shell that will run the service; replace the sample
+hash and keep the plaintext password for the browser/curl login:
 
 ```bash
-uv run expense-agent-seed-demo
+export EXPENSE_AGENT_DATABASE_PATH=./data/expense-agent.sqlite3
+export EXPENSE_AGENT_REVIEWERS_JSON='[{"username":"reviewer","reviewer_id":"local:reviewer","email":"reviewer@example.com","display_name":"Finance Reviewer","password_hash":"paste-generated-hash"}]'
+export EXPENSE_AGENT_CSRF_SECRET='local-demo-only-change-this-secret-123456'
+export EXPENSE_AGENT_REQUIRE_HTTPS=false
+export EXPENSE_AGENT_ALLOWED_HOSTS=localhost,127.0.0.1
+export EXPENSE_AGENT_FORWARDED_ALLOW_IPS=127.0.0.1
+export EXPENSE_AGENT_HOST=127.0.0.1
+export EXPENSE_AGENT_PORT=8000
 uv run expense-agent-review
 ```
 
-Open `http://127.0.0.1:8000/reviews`. The browser displays its native HTTP Basic
-credential prompt; enter the `username` and the plaintext password whose hash
-you placed in `EXPENSE_AGENT_REVIEWERS_JSON`. There is deliberately no default
-usable password. After verification, the server derives the canonical reviewer
-ID, email, and display name; the user never types an internal reviewer ID.
-Plain HTTP is only for this local flow. Production must keep
-`EXPENSE_AGENT_REQUIRE_HTTPS=true` behind a correctly configured trusted TLS
-ingress.
+Open `http://127.0.0.1:8000/reviews` and authenticate with `reviewer` and the
+plaintext password used to create the hash. Local HTTP is intentional only for
+this demonstration; production keeps HTTPS enabled.
 
-## Verification
+### End-to-end intake and review demo
+
+In another shell, set the same local username/password and request a CSRF token:
 
 ```bash
-uv run pytest
-uv run ruff check src tests
+export EA_BASE_URL=http://127.0.0.1:8000
+export EA_REVIEW_USER=reviewer
+export EA_REVIEW_PASSWORD='the-local-plaintext-password'
+export EA_CSRF_TOKEN="$(
+  curl --silent --user "$EA_REVIEW_USER:$EA_REVIEW_PASSWORD" \
+    "$EA_BASE_URL/api/session" \
+  | python -c 'import json, sys; print(json.load(sys.stdin)["csrf_token"])'
+)"
+```
+
+Submit the third assignment sample. It is routed to human review because it is
+above BRL 200 and its hotel date extraction carries explicit uncertainty:
+
+```bash
+python -c 'import json; print(json.dumps(json.load(open("examples/sample_requests.json"))[2]))' \
+| curl --silent --show-error \
+    --user "$EA_REVIEW_USER:$EA_REVIEW_PASSWORD" \
+    --header "Content-Type: application/json" \
+    --header "Origin: $EA_BASE_URL" \
+    --header "X-CSRF-Token: $EA_CSRF_TOKEN" \
+    --header "X-Correlation-ID: local-intake-demo" \
+    --data-binary @- \
+    "$EA_BASE_URL/api/requests"
+```
+
+Refresh `/reviews`, open `REQ-0003`, inspect the claim, OCR facts, rule evidence,
+and business timeline, then approve or reject it with a rationale. The decision
+moves the reimbursement from pending v3 to its final v4 state. The safe all-
+status result can also be retrieved directly:
+
+```bash
+curl --silent --user "$EA_REVIEW_USER:$EA_REVIEW_PASSWORD" \
+  "$EA_BASE_URL/api/requests/REQ-0003"
+```
+
+To demonstrate only the review screen with fictional cases, use a fresh
+database and run `uv run expense-agent-seed-demo` before starting the service.
+
+## API summary
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/session` | Authenticated reviewer identity and short-lived CSRF token. |
+| `POST` | `/api/requests` | Strict intake, synchronous extraction/policy, idempotent result. |
+| `GET` | `/api/requests/{request_id}` | Safe exact-ID lookup across every retained status. |
+| `GET` | `/api/reviews` | Bounded server-side pending-queue discovery. |
+| `GET` | `/api/reviews/{request_id}` | Review evidence plus ETag. |
+| `GET` | `/api/reviews/{request_id}/events` | Sanitized cursor-paginated business timeline. |
+| `POST` | `/api/reviews/{request_id}/decisions` | Atomic human decision; requires CSRF, origin, and `If-Match`. |
+
+OpenAPI routes are disabled in the shipped HTTP adapter. See
+[feature documentation](docs/features.md) for request/response and error
+semantics.
+
+## Verify
+
+```bash
+uv run --frozen pytest
+uv run --frozen ruff check src tests
 uv build
 ```
 
-The latest recorded verification completed 60 automated tests, Ruff, and
-JavaScript syntax validation. Coverage includes the authenticated and sanitized
-business-timeline endpoint, signed event cursors, pagination without duplicate
-events, and the decision-to-timeline integration. The prior browser flow covered
-three locales, filters, table/cards/detail modes, a 10 + 6 item queue traversal
-without overlap, and an auditable `201 Created` decision with no console errors.
-Packaging also produced both sdist and wheel; the wheel contains the
-HTML/CSS/JavaScript assets and all three command-line entry points.
+The final local quality run passed **140/140 tests with warnings treated as
+errors**, Ruff, JavaScript syntax validation, and `git diff --check`. The GitHub
+Actions workflow uses commit-pinned actions, a frozen lockfile, and pinned
+build-system dependencies; it runs tests, Ruff, and sdist/wheel build on every
+push and pull request. Dependabot monitors both Python and Actions dependencies.
+
+## Documentation
+
+Start at the [documentation index](docs/README.md). The
+[final report](docs/final-report.md) summarizes requirements, decisions,
+evidence, trade-offs, and honest production gaps. The accepted AWS hybrid
+serverless architecture remains a documented target only; no cloud resources
+or IaC are present in this repository.

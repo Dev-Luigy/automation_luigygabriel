@@ -45,17 +45,22 @@ Status meanings:
 | D-029 | Preserve originals and approve retention before lifecycle deletion. | proposed; awaiting legal and governance confirmation |
 | D-030 | Derive serverless reviewer identity automatically through corporate OIDC/SSO. | superseded by standalone identity direction |
 | D-031 | Separate the submitter status experience from the internal evidence-review workspace. | superseded; incorrectly assumed an existing client channel |
-| D-032 | Build standalone submitter, reviewer, and audit/administration surfaces. | accepted; implementation partial |
+| D-032 | Build standalone submitter, reviewer, and audit/administration surfaces. | accepted; intake/result API and reviewer UI implemented, submitter/audit UIs pending |
 | D-033 | Use server-side indexed filtering, sorting, search, and cursor pagination with multiple review views. | accepted; implemented for reviewer slice |
 | D-034 | Localize the product interface in Portuguese, English, and Spanish. | accepted; implemented for reviewer slice |
 | D-035 | Use an application-owned managed identity service rather than an existing corporate IdP. | accepted target; not implemented |
-| D-036 | Make discovery database-scoped across the authorized dataset; retain keyset pagination and add exact all-status/history/audit lookup. | accepted; pending-queue scope implemented, broader discovery planned |
-| D-037 | On case selection, separate reviewer evidence and business timeline from privileged technical trace, with authorized on-demand access to the immutable original. | accepted; business timeline implemented, technical trace and content access partial/planned |
-| D-038 | Expose reviewer business history through a dedicated sanitized, cursor-paginated endpoint. | accepted and implemented for current event types |
+| D-036 | Make discovery database-scoped across the authorized dataset; retain keyset pagination and add exact all-status/history/audit lookup. | accepted; pending search and exact all-status lookup implemented, history/audit search planned |
+| D-037 | On case selection, separate reviewer evidence and business timeline from privileged technical trace, with authorized on-demand access to the immutable original. | accepted; 1:N trace and business timeline implemented, privileged UI and content access partial/planned |
+| D-038 | Expose reviewer business history through a dedicated sanitized, cursor-paginated endpoint. | accepted and implemented for current business event types |
 | D-039 | Use a same-origin CloudFront edge and Cognito-backed serverless BFF session. | accepted production target; not implemented |
 | D-040 | Keep the Aurora business ledger authoritative and export its transactional outbox to immutable storage. | accepted production target; not implemented |
 | D-041 | Evaluate Kubernetes/EKS as a container runtime without replacing the accepted serverless target. | superseded by D-042; evaluated and not selected |
 | D-042 | Retain the hybrid AWS serverless target and close Kubernetes as a current deployment option. | accepted |
+| D-043 | Reject receipts older than 90 days before applying human-review route precedence. | implemented assessment interpretation; stakeholder validation open |
+| D-044 | Compose an offline deterministic extractor by default and keep live HTTPS extraction optional/configurable. | accepted and implemented |
+| D-045 | Persist the v1→v3 workflow through short transactions and immutable one-to-many invocation attempts. | accepted and implemented |
+| D-046 | Provide strict authenticated intake and safe all-status lookup with request-ID plus fingerprint idempotency. | accepted and implemented |
+| D-047 | Describe current audit honestly as processing/decision traceability and block production until all-operation coverage exists. | accepted release gate |
 
 ## D-001 - Deterministic financial authority
 
@@ -499,11 +504,11 @@ the submitter needs a comprehensible result without access to model traces,
 internal controls, or another person's identity. Reusing an existing company
 surface also avoids duplicating authentication and product navigation.
 
-**Current boundary:** The repository implements only the internal pending queue,
-case detail, and approve/reject action. It persists and displays attachment
-locations but does not yet retrieve or preview bytes. Intake, OCR/LLM
-orchestration, deterministic policy, submitter status, result notification, and
-audit search/export remain planned.
+**Boundary when this superseded proposal was written:** The repository then
+implemented only the internal pending queue, case detail, and approve/reject
+action. D-043 through D-046 subsequently implemented OCR-text extraction,
+deterministic policy, intake, and exact all-status results. Attachment bytes,
+submitter/audit screens, and audit export remain absent.
 
 **Evidence required:** Confirm the existing employee channel, intake ownership,
 how final results are returned (polling, event, or approved notification),
@@ -528,9 +533,10 @@ Do not assume or require an existing RecargaPay frontend, IdP, CRM, database,
 notification mechanism, or workflow. Integration adapters may be added later,
 but the product must remain usable and auditable without them.
 
-**Current boundary:** Only the authenticated reviewer queue/detail/decision
-slice exists. Submitter intake/tracking and audit/administration screens remain
-planned and must not be represented as implemented.
+**Current boundary:** Authenticated intake and exact all-status result APIs now
+exist alongside the reviewer queue/detail/timeline/decision screen. No
+submitter upload/tracking screen or privileged audit/administration screen
+exists. Attachment bytes are not accepted or served.
 
 ## D-033 - Scalable review discovery and views
 
@@ -615,9 +621,9 @@ administrators, and recovery operations still require concrete policies.
 
 ## D-036 - Database-scoped discovery beyond the visible page
 
-**Status:** Accepted. Server-side discovery over the current pending-review
-scope is implemented; exact lookup across all statuses, completed-case history,
-and audit search are planned and not implemented.
+**Status:** Accepted. Server-side pending discovery and exact lookup across all
+retained statuses are implemented; completed-case list/history and cross-case
+audit search remain planned.
 
 **Question:** How can an operator find one request among millions without
 walking page by page or limiting the search to the rows already rendered in the
@@ -635,10 +641,11 @@ folded into the operational pending queue.
 filters, sorting, and a 10-100 row limit in SQLite before returning data. Its
 opaque HMAC-signed keyset cursor is tied to the query and a first-page snapshot.
 This means matching pending requests can be found even when they are not on the
-currently visible page. It does not yet provide a product search across final
-or processing states, completed-case navigation, or audit-event search. A
-regression test proves the distinction by placing a target outside the first
-unfiltered page and finding it with a new server-side query.
+currently visible page. `GET /api/requests/{request_id}` is now an indexed,
+authenticated direct lookup across received, processing, automated-final, and
+human-final statuses. Completed-case list navigation and cross-case audit-event
+search remain absent. Regression tests cover both cross-page pending discovery
+and safe all-status exact lookup.
 
 **Pagination consequence:** Retain keyset/cursor pagination rather than numeric
 `OFFSET` pages. A "jump to page 47,821" control is neither stable under
@@ -657,9 +664,9 @@ justifies the additional consistency and operational cost.
 ## D-037 - Evidence detail, trace separation, and original-file access
 
 **Status:** Accepted direction; partially implemented. Structured reviewer
-evidence and a sanitized business timeline exist, but the privileged technical
-trace surface, attachment-content authorization, and file-access auditing do
-not.
+evidence, a sanitized business timeline, and immutable 1:N processing attempts
+exist, but the privileged technical-trace surface, attachment-content
+authorization, and file-access auditing do not.
 
 **Question:** When a reviewer selects a card, can that person see the evidence,
 traceability, and original receipt required to make and later explain a
@@ -670,13 +677,13 @@ normalized facts, detected problems, policy version, rule evaluations, and
 attachment locations. The detail API also carries safe model-invocation
 metadata and automated-decision data, although the current screen does not
 render that technical trace. The screen independently loads a sanitized,
-cursor-paginated timeline over the append-only enqueue and human-decision
+cursor-paginated timeline over the append-only processing and review business
 events. It is a case-scoped reviewer projection, not the privileged cross-case
-audit search. The attachment model contains only a `location` string; it does not serve the
-original bytes, preview them, verify a content checksum/version, or audit a
-read. Its trace schema also permits only one invocation row per request, so it
-cannot yet represent separate OCR, primary-model, verifier, retry, and
-reprocessing attempts.
+audit search. The attachment model contains only a `location` string; it does
+not serve the original bytes, preview them, verify a content checksum/version,
+or audit a read. `processing_invocation_attempts` now supports immutable
+attempts by processing run, stage, and attempt. The current synchronous service
+executes one primary attempt and has no retry scheduler or secondary verifier.
 
 **Decision:** Case selection must provide three deliberately separated views:
 
@@ -691,12 +698,14 @@ reprocessing attempts.
    object-level authorization check. Opening a card must not automatically
    transfer every receipt byte.
 
-**Trace multiplicity consequence:** Before the automated pipeline exists,
-replace the one-row-per-request trace with immutable one-to-many invocations
-identified by `invocation_id`, processing run, stage, and attempt. Each attempt
-links its exact input manifest or preceding output hash to its own output hash,
-provider/model/prompt configuration, timing, result, and protected raw output
-or error. Earlier retries and reprocessing runs are appended, never overwritten.
+**Trace multiplicity implementation:** The automated pipeline persists a
+running attempt before extractor execution and terminal status/raw output/hash
+after it. `processing_invocation_attempts` is identified by `invocation_id`,
+processing run, stage, and attempt; terminal attempts are immutable. Each links
+its input hash to an output hash, provider/model/prompt configuration, timing,
+result, and protected raw output/error. The legacy one-row trace remains only a
+final compatibility projection. Retry/reprocessing orchestration is still
+future work, but earlier attempts no longer need to be overwritten.
 
 **Attachment integrity and delivery contract:** Replace exposed storage
 locations with stable attachment IDs and protected relational metadata linking
@@ -726,8 +735,7 @@ than overstated as proof that a human read the document.
 
 ## D-038 - Dedicated sanitized reviewer timeline
 
-**Status:** Accepted and implemented for the two current review-lifecycle event
-types.
+**Status:** Accepted and implemented for the current business event vocabulary.
 
 **Question:** How should a normal reviewer inspect a case's business history
 without receiving an unbounded audit collection or privileged technical/model
@@ -757,11 +765,13 @@ authentication, `404`/`422`, sanitization, unknown events, restart-safe cursor
 use, tampering/cross-query/cross-purpose rejection, tie ordering, frontend
 whitelisting, and the actual decision-to-timeline path.
 
-**Boundary:** The current event vocabulary is only `review_case_enqueued` and
-`human_review_decided`. All assessment reviewers still share one global scope;
-completed-case discovery, object authorization, access auditing, event search
-and export, full intake/OCR/model/retry coverage, and key rotation remain
-production work.
+**Boundary:** The business projection now covers reimbursement received,
+processing started, automated decision, review enqueue, and human decision.
+Model-invocation start/completion are deliberately technical events; intake
+replay/conflict are security events. All assessment reviewers still share one
+global scope. Cross-case event search/export, object authorization/access
+auditing, retry/reprocessing recovery, and cursor-key rotation remain production
+work.
 
 ## D-039 - Same-origin edge and Cognito-backed BFF session
 
@@ -932,6 +942,158 @@ is implemented or required to complete the local code-assessment deliverable.
 Do not add Kubernetes manifests or EKS provisioning. Production deployment
 still requires the separately documented AWS, security, data-governance, load,
 and recovery inputs.
+
+## D-043 - Old-receipt precedence and time anchor
+
+**Status:** Implemented assessment interpretation; stakeholder validation open.
+
+**Question:** What happens when a receipt is both older than 90 days and above
+the mandatory human-review amount, and which date anchors age?
+
+**Decision:** Evaluate all rules, but give any `reject` outcome precedence over
+`review`. A receipt more than 90 calendar days old is rejected even when its
+amount also requires human review; both evaluations and reasons remain stored.
+Exactly 90 days is valid. Convert the supplied `submission.submitted_at` to
+`America/Sao_Paulo` and compare its calendar date with the receipt date.
+`decided_at` is metadata and cannot change the route.
+
+**Rationale:** The assignment says old receipts must be rejected and high-value
+requests must receive review but does not define the collision. Reject
+precedence avoids approving an explicitly ineligible claim while retaining the
+complete high-value evidence. Anchoring to immutable submission input makes
+processing delays deterministic. This is not confirmation from a policy owner;
+the literal high-value threshold and collision must be validated before
+production.
+
+**Production blocker:** The assessment follows the assignment object, whose
+`submitted_at` is supplied by the caller. A real monetary deployment must not
+let a client choose the authoritative age anchor. It must add a server-owned
+`received_at` (or separately model claimed and authoritative timestamps),
+define clock/timezone semantics, and use the authoritative value in policy.
+
+**Evidence:** Acceptance tests cover exactly 90 days, a decision made much
+later, and a 91-day-old claim above BRL 2,000.
+
+## D-044 - Default and optional extractor strategy
+
+**Status:** Accepted and implemented.
+
+**Decision:** Compose `DeterministicReceiptExtractor` in the assessment entry
+point. It parses explicit fields from the supplied OCR text offline and produces
+a complete trace. Keep `HttpJsonReceiptExtractor` as an optional explicitly
+configured adapter with HTTPS-only endpoints, timeouts, response-size limits,
+strict UTF-8/JSON/schema validation, redirect and duplicate-key rejection,
+bounded failures, and secret-safe representation. Do not require a live LLM or
+a second provider.
+
+**Rationale:** The repository must run and be assessed without external
+credentials, nondeterministic availability, or variable cost. The port proves
+that a provider is replaceable while the policy remains deterministic. Two
+models on every request are not justified until labeled quality/cost/latency
+evidence exists.
+
+**Consequence:** Any extraction warning/failure routes to review. The optional
+HTTP adapter is tested but is not selected through current environment
+configuration. A secondary verifier remains a proposed risk-based experiment.
+
+**Production blocker:** Assessment intake accepts caller-supplied
+`raw_ocr_text` and attachment reference strings. Without application-owned
+receipt bytes, checksum/version binding, malware/media validation, and trusted
+OCR over those exact bytes, a caller can self-attest text that may auto-approve.
+The current extractor path therefore cannot authorize real monetary decisions.
+
+## D-045 - Durable processing transactions and 1:N attempts
+
+**Status:** Accepted and implemented.
+
+**Decision:** Persist workflow in short transaction boundaries:
+
+1. submission, attachments, and `reimbursement_received` at received v1;
+2. running processing run, state transition, and start event at processing v2;
+3. running invocation attempt and technical start event before extractor I/O;
+4. terminal attempt/raw output/hash and technical completion event after I/O;
+5. extraction, automated decision/reasons/rules, terminal run, reimbursement
+   route, business event, and optional review enqueue atomically at v3;
+6. human decision, review/status transition, and audit event atomically at v4.
+
+Do not hold a SQL transaction across extractor I/O. Store attempts one-to-many
+by invocation ID, processing run, stage, and attempt; terminal attempts and
+financial evidence are immutable. Retain the historical one-row trace only as
+a final compatibility projection.
+
+**Rationale:** Recording invocation intent before the call preserves evidence
+of abandoned work. Separating I/O avoids long locks. Atomic finalization avoids
+status without decision/evidence/audit. 1:N identities allow retries and
+reprocessing to append rather than overwrite.
+
+**Implementation evidence:** Tests force extractor failure, multiple attempts,
+direct mutation rejection, and a late audit-event collision; the last leaves
+the request at processing v2 with no leaked extraction/decision/review rows.
+
+**Boundary and production blocker:** The synchronous service currently runs one
+primary attempt and does not recover abandoned running attempts. A crash can
+leave a request/run/attempt at v2/running indefinitely. Production needs
+leases/watchdogs, idempotent resume, retry/DLQ/replay controls, and audited
+operational recovery before monetary activation.
+
+## D-046 - Authenticated intake, safe result, and fingerprint idempotency
+
+**Status:** Accepted and implemented.
+
+**Decision:** Add strict `POST /api/requests` and authenticated exact-ID
+`GET /api/requests/{request_id}`. The write requires JSON, same origin, CSRF,
+and a server-derived `authenticated_caller` audit actor distinct from claimed
+`submitted_by`. Reject binary64 JSON floats at/above `2**46`, where cents can
+collapse, while allowing exact decimal strings. Normalize the typed submission
+and compute a canonical SHA-256 fingerprint. A new ID returns `201`; the same ID
+and hash returns its stored result with `200` and no second extraction; the same
+ID with a different hash appends a security event and returns `409`.
+
+The result projection works across every retained status while omitting raw OCR,
+attachment references, raw provider response, processing/invocation internals,
+provider parameters, technical/security events, and reviewer identity.
+
+**Rationale:** `request_id` alone detects a duplicate but cannot distinguish a
+safe retry from accidental or malicious payload reuse. A canonical fingerprint
+provides explicit idempotency while keeping normal responses least-privilege.
+The exact-ID path prevents users from searching page by page through a large
+pending queue.
+
+**Production blocker:** HTTP Basic proves authentication and server-derived
+identity, but every configured assessment account has global request, evidence,
+timeline, and decision scope. There is no owner, role, team, tenant, case,
+purpose, value-authority, or separation-of-duties enforcement. Managed identity
+alone is insufficient; production must implement those authorization predicates
+and their audit before real reimbursement data or money is exposed.
+
+**Evidence:** Real FastAPI-to-SQLite tests cover create/replay/conflict, strict
+validation, actor derivation, safe serialization, all-status lookup, and
+security-event persistence.
+
+## D-047 - Processing trace versus all-operation traceability
+
+**Status:** Accepted release gate.
+
+**Question:** Does the new run/attempt/event model satisfy the requirement for
+full traceability of all operations?
+
+**Decision:** No. Describe it precisely as processing and financial-decision
+traceability. It records intake acceptance, processing start, extractor
+attempts, automated routing, queue enqueue, idempotency replay/conflict, and
+human decision. Do not claim that every service operation is audited.
+
+**Missing coverage:** Authentication success/failure, ordinary request/evidence
+reads, searches and exported query context, validation failures, every
+orchestration exception, authorization decisions, attachment preview/download,
+and administrative actions do not yet have complete privacy-aware audit paths.
+There is also no immutable outbox/export outside SQLite.
+
+**Consequence:** Production financial activation is blocked until accountable
+security/compliance owners define the required event taxonomy, sensitive-field
+redaction, retention/access controls, correlation/sequence semantics, immutable
+export, monitoring, and verification. Operational infrastructure logs may
+corroborate this ledger but cannot replace business identity, reason, policy,
+and evidence facts.
 
 ## Decision template
 

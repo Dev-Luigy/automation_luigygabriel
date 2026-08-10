@@ -4,9 +4,10 @@ This document defines the standalone product experience accepted in D-032
 through D-035. It does not assume any existing RecargaPay frontend, identity
 provider, database, CRM, or notification channel.
 
-The implemented repository still covers the authenticated reviewer slice. The
-submitter and audit/administration surfaces below are required product scope but
-remain planned until their APIs and persistence are implemented.
+The implemented repository provides authenticated intake and all-status result
+APIs plus the reviewer slice. The submitter web portal and privileged
+audit/administration surface below remain planned; attachment bytes are not
+accepted or served.
 
 ## Product information architecture
 
@@ -39,9 +40,10 @@ flowchart TB
 | Auditor | Reconstruct who did what, when, why, and with which versions | Immutable decisions/events, actors, correlations, policy/model/input/output hashes, before/after states | Ability to alter a financial decision |
 | Administrator | Operate access and approved configuration | Invitations, roles, deprovisioning, access reviews, operational configuration history | Financial approval merely because the user is an administrator |
 
-Authentication does not imply every permission. Authorization is enforced by
-route and object, and separation-of-duty rules remain an explicit production
-policy decision.
+Authentication does not imply every permission. The assessment currently lacks
+object-level authorization and gives configured Basic users global scope; this
+is a production blocker. Production must enforce route/object predicates and
+separation of duties in the service and database query boundary.
 
 ## Review operations layout
 
@@ -78,10 +80,10 @@ does not perform security or policy filtering locally.
 Search is applied by the server before pagination. Consequently, a matching
 pending request can be returned even when it would have appeared on a later
 unfiltered page; the browser does not search only its currently rendered rows.
-The current boundary is nevertheless narrow: only pending cases participate,
-and free text is a literal prefix over request ID, submitter, and extracted
-merchant. This assessment behavior must not be described as all-status,
-full-text, OCR, attachment, or audit search.
+The queue boundary is nevertheless narrow: only pending cases participate, and
+free text is a literal prefix over request ID, submitter, and extracted merchant.
+The separate exact-ID result API covers all retained statuses; neither endpoint
+is full-text OCR/attachment/audit search.
 
 | Control | Server behavior | Scale note |
 | --- | --- | --- |
@@ -111,7 +113,7 @@ pages one at a time.
 flowchart LR
     intent{User intent}
     pending["Pending work queue"]
-    request["Exact-ID request explorer (planned)"]
+    request["Exact-ID all-status API (implemented)\nUI explorer planned"]
     audit["Audit search (planned)"]
     detail["Authorized request detail"]
 
@@ -124,14 +126,12 @@ flowchart LR
 ```
 
 The implemented pending queue answers an operational question and stays bounded
-by server-side filters, stable ordering, and a cursor. The target exact-ID
-request explorer answers a support or investigation question across all
-statuses without requiring queue traversal. The target audit search answers a
-privileged evidentiary question across events, actors, correlations, and
-versions. The latter two user experiences are specifications only. The existing
-detail-by-ID route can retrieve a known case, but there is no discoverable
-all-status explorer, dedicated support/audit authorization contract, or audit
-search screen/API.
+by server-side filters, stable ordering, and a cursor. The authenticated
+`GET /api/requests/{request_id}` answers an exact support/investigation lookup
+across all statuses without queue traversal, but it has no dedicated UI or
+support authorization role. The target audit search remains a privileged
+specification across events, actors, correlations, and versions; no cross-case
+audit screen/API exists.
 
 Search and pagination remain subject to authorization before ordering or
 limiting. A future team, region, legal-entity, or separation-of-duty scope must
@@ -149,17 +149,19 @@ and approved scalar payload fields with bounded cursor pagination. The API
 response also carries safe model-invocation metadata and any persisted human
 decision, but the current drawer does not render the technical trace. This is
 useful decision context, but it is not yet a complete traceability workspace:
-only enqueue and human-decision events exist, the read is not recorded as an
-audit event, the protected raw model response is withheld, and original file
-bytes cannot be previewed or downloaded.
+business events now cover received, processing, automated decision, review
+enqueue, and human decision, while technical/security events remain protected;
+the read is not recorded as an access event, and original file bytes cannot be
+previewed or downloaded.
 
 The target detail experience has four sections:
 
 1. **Evidence** — original OCR text, normalized object, claim comparison,
    problems, and deterministic rules.
-2. **Business timeline** — implemented for enqueue and human-decision events
-   with state changes, actors, rationale, timestamps, request versions, and
-   correlations; intake/OCR/model/retry/access events remain future coverage.
+2. **Business timeline** — implemented for intake, processing start, automated
+   decision, review enqueue, and human decision with actors, timestamps,
+   versions, and correlations. Model attempts are separately stored technical
+   events; retry/access coverage remains future work.
 3. **Technical trace** — provider/model and prompt versions, hashes,
    parameters, latency, attempts, and errors. Raw provider responses remain in
    protected storage and require a separately authorized, purpose-limited,
@@ -239,7 +241,7 @@ input/output hashes, and timestamp. It never replaces the original.
 sequenceDiagram
     actor Submitter
     participant Portal as "Submitter portal — planned"
-    participant API as "Intake/status API — planned"
+    participant API as "Intake/status API — implemented for OCR text"
     participant Store as "SQL + private object storage"
     participant Pipeline as "Asynchronous processing"
 
@@ -253,8 +255,9 @@ sequenceDiagram
     API-->>Portal: Processing / pending review / final result
 ```
 
-This is a required standalone experience, but the current executable does not
-yet provide these routes or screens.
+The current executable provides the create/status routes synchronously for
+supplied OCR text, but not this upload portal, receipt-byte/object-storage path,
+asynchronous processing, or submitter-specific ownership authorization.
 
 ## Accessibility and safe interaction
 

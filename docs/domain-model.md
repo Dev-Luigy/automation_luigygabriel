@@ -2,20 +2,17 @@
 
 ## Modeling approach
 
-Financial objects are separate from HTTP DTOs, database rows, and provider SDK
-types. Immutable dataclasses validate values at construction time, while the
-`ReimbursementCase` aggregate is the only object allowed to perform workflow
-transitions. The application layer then coordinates that aggregate with an
-abstract repository.
-
-## Core reimbursement objects
+The model separates financial facts and rules from transport, persistence, and
+provider concerns. Domain constructors enforce invariants immediately; frozen
+value objects and tuple/mapping snapshots prevent callers from mutating
+historical evidence after construction.
 
 ```mermaid
 classDiagram
     class Money {
         +Decimal amount
         +Currency currency
-        +brl(str) Money
+        +brl(text) Money
     }
     class AttachmentReference {
         +str location
@@ -30,29 +27,170 @@ classDiagram
         +AttachmentReference[] attachments
     }
     class ReimbursementCase {
-        -ReimbursementStatus status
-        -DecisionRecord[] decisions
-        +str request_id
+        +ReimbursementSubmission submission
+        +ReimbursementStatus status
+        +DecisionRecord[] decisions
         +start_processing()
-        +record_automated_decision(decision)
-        +record_human_decision(decision)
+        +record_automated_decision()
+        +record_human_decision()
+    }
+    class ReceiptFacts {
+        +date receipt_date
+        +Money total
+        +str category
+        +str merchant_name
+        +str tax_id
+        +Mapping evidence
+        +str[] warnings
+    }
+    class ExtractionResult {
+        +str request_id
+        +ExtractionStatus status
+        +ReceiptFacts facts
+        +ModelInvocationTrace trace
+        +str error
     }
     class AutomatedDecision {
         +str decision_id
-        +str request_id
         +PolicyDecisionRoute route
-        +datetime decided_at
         +str policy_version
         +DecisionReason[] reasons
         +RuleEvaluation[] rule_evaluations
     }
     class HumanDecision {
         +str decision_id
-        +str request_id
         +ReviewOutcome outcome
         +str reviewer
         +str reason
         +datetime decided_at
+    }
+
+    ReimbursementSubmission *-- Money
+    ReimbursementSubmission *-- AttachmentReference
+    ReimbursementCase *-- ReimbursementSubmission
+    ReimbursementCase o-- AutomatedDecision
+    ReimbursementCase o-- HumanDecision
+    ExtractionResult *-- ReceiptFacts
+    ReceiptFacts o-- Money
+```
+
+## Core reimbursement objects
+
+### `Money` and `Currency`
+
+- The assessment supports BRL only.
+- Amounts are finite, non-negative `Decimal` values with at most two fractional
+  digits; `float` construction is rejected in the domain.
+- API intake accepts plain decimal notation and normalizes it to two digits.
+- Equality includes amount and currency, so policy comparisons are exact.
+
+### `AttachmentReference`
+
+A non-blank string that identifies caller-supplied evidence. In this repository
+it is not proof that a file exists and is not an authorized download locator.
+Production needs a stable attachment ID plus private object version/checksum,
+media/size/scan state, retention class, and access audit.
+
+### `ReimbursementSubmission`
+
+The immutable business input contains request ID, submitter email, timezone-
+aware submission timestamp, supplied OCR text, claimed category, exact amount,
+and ordered attachments. The canonical fingerprint uses all these normalized
+fields for idempotency.
+
+`submitted_by` is a claim attribute. The authoritative audit actor comes from
+verified authentication context and is passed separately to the processing
+service; clients cannot choose the audit identity in the JSON body.
+
+### `ReimbursementCase`
+
+The aggregate protects allowed financial transitions and append-only decision
+history:
+
+```mermaid
+stateDiagram-v2
+    [*] --> received
+    received --> processing
+    processing --> auto_approved: automated auto approval
+    processing --> pending_review: automated human-review route
+    processing --> rejected: automated reject
+    pending_review --> approved_after_review: human approve
+    pending_review --> rejected: human reject
+```
+
+Each decision must reference the same request. A human decision cannot be
+recorded unless an automated decision first placed the case in pending review.
+Persistence adds numeric versions v1 through v4 around these domain states.
+
+## Extraction and reproducibility objects
+
+```mermaid
+classDiagram
+    class ReceiptExtractor {
+        <<protocol>>
+        +provider str
+        +model str
+        +prompt_version str
+        +prompt_hash str
+        +extract(submission) ExtractionResult
+    }
+    class ModelInvocationTrace {
+        +str provider
+        +str model
+        +str prompt_version
+        +str prompt_hash
+        +str input_hash
+        +str raw_response
+        +datetime invoked_at
+        +int duration_ms
+        +Mapping parameters
+    }
+    class ExtractionResult {
+        +ExtractionStatus status
+        +ReceiptFacts facts
+        +ModelInvocationTrace trace
+        +str error
+    }
+    class DeterministicReceiptExtractor
+    class HttpJsonReceiptExtractor
+
+    ReceiptExtractor <|.. DeterministicReceiptExtractor
+    ReceiptExtractor <|.. HttpJsonReceiptExtractor
+    ReceiptExtractor --> ExtractionResult
+    ExtractionResult *-- ModelInvocationTrace
+```
+
+`ExtractionResult` is either:
+
+- `succeeded`, with `ReceiptFacts` and no error; or
+- `failed`, with a bounded error and no facts.
+
+Both outcomes require a complete `ModelInvocationTrace`. That trace retains the
+protected raw output for audit, while normal request/reviewer JSON exposes only
+structured evidence and safe metadata. The workflow validates that extractor
+provider/model/prompt/input identity matches the invocation registered before
+the call.
+
+The default offline adapter parses explicit `DATE`/`DATA`/`CHECK-IN`/
+`CHECK-OUT`, final `TOTAL`/`FARE`, BRL, category markers, merchant, and tax ID.
+It reports missing or ambiguous information rather than guessing. The optional
+HTTP adapter implements the same port and fails closed on insecure configuration,
+redirects, timeouts, oversized/non-UTF-8 responses, duplicate JSON keys, or
+invalid schema.
+
+## Deterministic policy objects
+
+```mermaid
+classDiagram
+    class BaselinePolicy {
+        +policy_version = "baseline-v1"
+        +rule_version = "1.0.0"
+        +evaluate(submission, extraction, decision_id, decided_at) AutomatedDecision
+    }
+    class AutomatedDecision {
+        +PolicyDecisionRoute route
+        +DecisionReason[] reasons
+        +RuleEvaluation[] rule_evaluations
     }
     class DecisionReason {
         +str code
@@ -67,385 +205,152 @@ classDiagram
         +Mapping facts
     }
 
-    ReimbursementCase *-- ReimbursementSubmission
-    ReimbursementSubmission *-- Money
-    ReimbursementSubmission *-- AttachmentReference
-    ReimbursementCase *-- AutomatedDecision
-    ReimbursementCase *-- HumanDecision
+    BaselinePolicy --> AutomatedDecision
     AutomatedDecision *-- DecisionReason
     AutomatedDecision *-- RuleEvaluation
 ```
 
-`Money` only accepts finite, non-negative `Decimal` values with at most two
-decimal places; BRL is the currently supported currency. Time-bearing objects
-require timezone-aware datetimes. IDs and explanations must be non-blank.
+The policy is pure: it performs no I/O, reads no clock, and generates no IDs.
+The caller supplies decision metadata. Receipt age is anchored to the immutable
+submission date converted to `America/Sao_Paulo`, so a processing delay cannot
+change eligibility. That timestamp is nevertheless client-controlled in the
+assignment input. Production must add a server-owned authoritative receipt time
+before this rule can govern real money.
 
-## Aggregate state machine
+Rules evaluate extraction quality, critical facts, BRL currency, receipt age,
+amount consistency, category consistency, and the claimed amount band. Route
+precedence is:
 
-```mermaid
-stateDiagram-v2
-    [*] --> RECEIVED
-    RECEIVED --> PROCESSING: start_processing()
-    PROCESSING --> AUTO_APPROVED: AUTO_APPROVED route
-    PROCESSING --> PENDING_REVIEW: HUMAN_REVIEW route
-    PROCESSING --> REJECTED: REJECTED route
-    PENDING_REVIEW --> APPROVED_AFTER_REVIEW: APPROVED outcome
-    PENDING_REVIEW --> REJECTED: REJECTED outcome
-```
+1. Any `reject` evaluation → `rejected`.
+2. Otherwise any `review` evaluation → `human_review`.
+3. Otherwise → `auto_approved`.
 
-The aggregate rejects a human decision before `PENDING_REVIEW`, a second
-automated decision after leaving `PROCESSING`, a decision for another
-`request_id`, or any direct assignment of a final state. `ReviewService`
-rehydrates the relevant submission and automated decision, replays the domain
-transition, and gives the resulting state to the repository transaction.
+This precedence is the implemented assessment interpretation. The assignment's
+simultaneous old-receipt rejection and mandatory high-value review wording is
+ambiguous, and a policy owner has not yet confirmed the collision behavior.
 
-## Extraction and reproducibility objects
+Consequences:
 
-```mermaid
-classDiagram
-    class ExtractionResult {
-        +str request_id
-        +ExtractionStatus status
-        +ModelInvocationTrace trace
-        +ReceiptFacts facts
-        +str error
-    }
-    class ReceiptFacts {
-        +date receipt_date
-        +Money total
-        +str category
-        +str merchant_name
-        +str tax_id
-        +Mapping evidence
-        +str[] warnings
-    }
-    class ModelInvocationTrace {
-        +str provider
-        +str model
-        +str prompt_version
-        +str prompt_hash
-        +str input_hash
-        +str raw_response
-        +datetime invoked_at
-        +int duration_ms
-        +Mapping parameters
-    }
-    ExtractionResult *-- ReceiptFacts
-    ExtractionResult *-- ModelInvocationTrace
-    ReceiptFacts *-- Money
-```
+- exactly BRL 200.00 may auto-approve only when every other rule passes;
+- BRL 200.01 through 2,000.00 requires review;
+- above BRL 2,000 requires review with a distinct high-value reason;
+- exactly 90 days is valid; more than 90 days is rejected;
+- old-receipt rejection wins over amount review, while all evaluations remain
+  recorded;
+- extraction failure/warning, missing facts, future date, or amount/category
+  mismatch routes to review rather than guessing or auto-rejecting.
 
-A successful extraction can contain partial facts. Missing values are not
-guessed: deterministic policy should route material uncertainty to review. A
-failed extraction has an error and cannot contain facts. The full invocation
-trace is persisted for audit; the browser response intentionally omits its raw
-model response.
-
-The repository contains the extraction contract and demo data, but no live OCR
-or language-model adapter. The model count and secondary-verifier strategy
-remain open decisions pending measured quality, cost, latency, and privacy data.
-
-## Human-review application objects
+## Processing application objects
 
 ```mermaid
 classDiagram
-    class ReviewService {
-        +list_pending() ReviewQueueItem[]
-        +search_pending(query) ReviewQueuePage
-        +get(request_id) ReviewCaseDetails
-        +list_events(request_id, query) ReviewEventPage
-        +decide(request_id, outcome, reason, reviewer, expected_version, correlation_id) ReviewDecisionResult
+    class ProcessingService {
+        +process(submission, actor, correlation_id) ProcessingOutcome
+        +get_result(request_id) RequestResult
     }
-    class ReviewRepository {
-        <<Protocol>>
-        +list_pending()
-        +search_pending(query, as_of)
-        +get(request_id)
-        +list_business_events(request_id, query)
-        +record_human_decision(...)
+    class WorkflowRepository {
+        <<protocol>>
+        +register_received()
+        +start_processing()
+        +begin_invocation()
+        +finish_invocation()
+        +complete_processing()
+        +get_result()
     }
-    class ReviewQueueQuery {
-        +str search
-        +str category
-        +str problem_code
-        +Money min_amount
-        +Money max_amount
-        +datetime submitted_from
-        +datetime submitted_to
-        +datetime pending_before
-        +PendingAgeBucket age_bucket
-        +ReviewQueueSort sort
-        +int page_size
-        +str cursor
+    class ProcessingOutcome {
+        +bool created
+        +bool replayed
+        +RequestResult result
     }
-    class ReviewQueuePage {
-        +ReviewQueueItem[] items
-        +int page_size
-        +ReviewQueueSort sort
-        +bool has_more
-        +str next_cursor
-        +ReviewQueueSummary summary
-    }
-    class ReviewQueueSummary {
-        +int total_pending
-        +int over_24h
-        +int high_value
-        +int amount_mismatch
-        +Money high_value_threshold
-        +datetime as_of
-    }
-    class ReviewEventQuery {
-        +int page_size
-        +str cursor
-    }
-    class ReviewBusinessEvent {
-        +str event_id
-        +str request_id
-        +str event_type
-        +datetime occurred_at
-        +AuditActor actor
-        +str correlation_id
-        +Mapping payload
-    }
-    class ReviewEventPage {
-        +ReviewBusinessEvent[] items
-        +int page_size
-        +bool has_more
-        +str next_cursor
-    }
-    class ReviewerIdentity {
-        +str reviewer_id
-        +str email
-        +str display_name
-    }
-    class ReviewQueueItem {
-        +str request_id
-        +str submitted_by
-        +datetime submitted_at
-        +str claimed_category
-        +Money claimed_amount
-        +datetime pending_since
-        +int version
-        +str merchant_name
-        +Money extracted_amount
-        +ReviewProblem primary_problem
-        +str[] problem_codes
-    }
-    class ReviewCaseDetails {
+    class RequestResult {
         +ReimbursementSubmission submission
         +ReimbursementStatus status
         +int version
-        +ReviewCaseStatus review_status
-        +ExtractionResult extraction
-        +ReviewProblem[] problems
+        +ProcessingRunSummary processing_run
+        +ExtractionSnapshot extraction
         +AutomatedDecision automated_decision
+        +ReviewProblem[] problems
         +HumanDecision human_decision
-        +ReviewerIdentity reviewed_by
     }
-    class ReviewProblem {
-        +str code
-        +str message
-        +Mapping evidence
-    }
-    class ReviewDecisionResult {
-        +HumanDecision decision
-        +ReimbursementStatus resulting_status
-        +int version
-        +str audit_event_id
-    }
+    class ProcessingRunSummary
+    class InvocationSummary
+    class ExtractionSnapshot
 
-    ReviewService --> ReviewRepository
-    ReviewService --> ReviewerIdentity
-    ReviewService --> ReviewDecisionResult
-    ReviewService --> ReviewQueueQuery
-    ReviewService --> ReviewQueuePage
-    ReviewService --> ReviewEventQuery
-    ReviewService --> ReviewEventPage
-    ReviewRepository --> ReviewQueueItem
-    ReviewQueuePage *-- ReviewQueueItem
-    ReviewQueuePage *-- ReviewQueueSummary
-    ReviewEventPage *-- ReviewBusinessEvent
-    ReviewBusinessEvent *-- AuditActor
-    ReviewRepository --> ReviewCaseDetails
-    ReviewCaseDetails *-- ReviewProblem
-    ReviewCaseDetails *-- ReviewerIdentity
+    ProcessingService --> WorkflowRepository
+    ProcessingService --> ReceiptExtractor
+    ProcessingService --> BaselinePolicy
+    ProcessingService --> ProcessingOutcome
+    ProcessingOutcome *-- RequestResult
+    RequestResult o-- ProcessingRunSummary
+    RequestResult o-- ExtractionSnapshot
+    ExtractionSnapshot *-- InvocationSummary
 ```
 
-`ReviewerIdentity` is an application value supplied by a trusted authentication
-adapter. The HTTP command does not contain it. `HumanDecision.reviewer` stores
-the canonical ID, while persistence snapshots the ID, email, and display name
-that were authenticated at decision time.
+`InvocationSummary` is intentionally safe: it contains identity, hashes,
+provider/model/prompt metadata, timing, status, parameters, and bounded error,
+but no raw response. The raw response remains in persistence. The public HTTP
+result is narrower still and omits the processing run, invocation metadata, raw
+OCR, attachment references, reviewer identity, and provider parameters.
 
-`ReviewCaseDetails` is a reviewer read model, not a mutable aggregate or an ORM
-entity. It combines the evidence needed for judgment without exposing database
-implementation details.
+`ProcessingOutcome.created` distinguishes a new `201` result from an idempotent
+`200` replay. A same-ID/different-fingerprint attempt raises a dedicated
+conflict rather than being mistaken for a review concurrency error.
 
-`ReviewQueueQuery` validates the operational discovery contract before it
-reaches persistence: optional text values are trimmed and bounded, money uses
-`Money`, all timestamps require timezones, the amount and submission ranges
-must be ordered, `pending_before` and `age_bucket` are mutually exclusive, and
-page size is restricted to 10 through 100. Its language-neutral enums are:
+## Human-review application objects
 
-- `ReviewQueueSort`: `pending_oldest`, `pending_newest`, `amount_asc`,
-  `amount_desc`, and `submitted_newest`;
-- `PendingAgeBucket`: `under_4h`, `4h_to_24h`, and `over_24h`.
+- `ReviewerIdentity`: canonical ID/email/display-name derived from the
+  authenticated principal.
+- `ReviewProblem`: stable code, message, and evidence explaining why the case
+  needs judgment.
+- `ReviewQueueQuery`: validated search, category/problem/amount/time/age filters,
+  sort, page size, and signed cursor.
+- `ReviewQueueItem`, `ReviewQueueSummary`, `ReviewQueuePage`: bounded operational
+  projection and KPIs.
+- `ReviewCaseDetails`: claim, attachments, raw OCR, facts, safe invocation
+  metadata, automated decision, problems, and current version.
+- `ReviewEventQuery`, `ReviewBusinessEvent`, `ReviewEventPage`: sanitized
+  business history with a separate purpose-bound cursor.
+- `ReviewDecisionResult`: immutable human decision, final status/version, and
+  audit event ID.
 
-`ReviewQueuePage` is the bounded application result. It couples a tuple of
-compact queue rows with `has_more`, an opaque forward cursor, and operational
-summary counts evaluated at one `as_of`. `ReviewQueueItem` now carries merchant,
-extracted total, primary problem, and problem codes so a reviewer can triage
-without loading every full case. The original problem message remains evidence;
-the browser translates known codes and interface labels rather than mutating
-stored text.
+`ReviewService` constructs a `ReimbursementCase` from repository state and asks
+the aggregate to perform the human transition before delegating the atomic
+write. Identity is a typed argument, not a request-body string.
 
-Cursor signing and keyset SQL are infrastructure responsibilities. The
-application model treats the cursor as an opaque string and does not expose its
-sort key or HMAC payload. The old `list_pending()` method remains only for
-internal compatibility; the HTTP collection uses `search_pending()` and never
-loads the complete queue into the browser.
+## Audit objects
 
-`ReviewEventQuery` independently bounds one case's business-history read to
-1–100 events. `ReviewBusinessEvent` is not the stored `AuditEvent`: it is a
-reviewer-safe projection with an event-specific scalar payload whitelist.
-`ReviewEventPage` returns stable chronological keyset metadata without exposing
-the cursor boundary or HMAC. This distinction prevents the normal review screen
-from becoming an accidental privileged technical-trace surface.
+`AuditActor` separates actor type (`authenticated_caller`, `system`, reviewer
+identity snapshot in a human decision) from actor ID. The claimed
+`submitted_by` value is never mislabeled as the verified actor. `AuditEvent`
+requires an event ID, request ID, type, aware timestamp, actor, correlation ID,
+and scalar/mapping payload.
 
-## Audit objects and lifecycle facts
+Persistence assigns each event one scope:
 
-```mermaid
-classDiagram
-    class AuditActor {
-        +str actor_type
-        +str actor_id
-    }
-    class AuditEvent {
-        +str event_id
-        +str request_id
-        +str event_type
-        +datetime occurred_at
-        +AuditActor actor
-        +str correlation_id
-        +Mapping payload
-    }
-    AuditEvent *-- AuditActor
-```
+- `business`: received, processing started, automated decision, queue enqueue,
+  and human decision; eligible for sanitized reviewer projection.
+- `technical`: model/extractor attempt start and completion; not returned by the
+  normal reviewer timeline.
+- `security`: idempotent replay and divergent-payload rejection; not returned by
+  normal business APIs.
 
-Both records are immutable domain values. The implemented repository appends a
-`review_case_enqueued` event when it persists a routed case and a
-`human_review_decided` event when it records the reviewer action. Database
-triggers prevent updates and deletes of every audit row.
-
-```mermaid
-sequenceDiagram
-    participant Policy as Deterministic producer
-    participant Repo as Review repository
-    participant Reviewer as Authenticated reviewer
-    participant Service as ReviewService
-
-    Policy->>Repo: Persist pending case
-    Repo->>Repo: Append review_case_enqueued
-    Reviewer->>Service: Outcome + rationale
-    Service->>Service: Create HumanDecision and AuditEvent
-    Service->>Repo: Commit at expected version
-    Repo->>Repo: Persist decision + state + human_review_decided atomically
-```
-
-## Object catalog
-
-| Object | Layer/classification | Mutable? | Primary responsibility |
-| --- | --- | --- | --- |
-| `Money` | Domain value object | No | Exact amount and currency. |
-| `AttachmentReference` | Domain value object | No | Opaque location of externally stored content. |
-| `ReimbursementSubmission` | Domain entity snapshot | No | Original employee input. |
-| `ReimbursementCase` | Domain aggregate root | Controlled | Workflow state and append-only in-memory decision history. |
-| `ReceiptFacts` | Domain value object | No | Structured evidence extracted from a receipt. |
-| `ModelInvocationTrace` | Domain value object | No | Complete model invocation metadata for audit. |
-| `ExtractionResult` | Domain result | No | Valid success or failure from extraction. |
-| `DecisionReason` | Domain value object | No | Explainable decision code, message, and evidence. |
-| `RuleEvaluation` | Domain value object | No | Versioned deterministic rule trace. |
-| `AutomatedDecision` | Domain record | No | Automated route plus policy evidence. |
-| `HumanDecision` | Domain record | No | Authenticated reviewer outcome and rationale. |
-| `AuditEvent` / `AuditActor` | Domain records | No | Correlated, append-only lifecycle fact. |
-| `ReviewerIdentity` | Application value | No | Canonical identity obtained from authentication. |
-| `ReviewProblem` | Application value | No | Concrete issue presented for judgment. |
-| `ReviewQueueQuery` | Application query | No | Validated search, filters, stable sort, page bound, and opaque cursor. |
-| `ReviewQueueSort` / `PendingAgeBucket` | Application enums | No | Stable language-neutral discovery codes. |
-| `ReviewQueueItem` | Application read model | No | Compact triage representation including merchant, extracted total, and problem summary. |
-| `ReviewQueueSummary` | Application read model | No | Global pending, overdue, high-value, and amount-mismatch counts at one snapshot time. |
-| `ReviewQueuePage` | Application read model | No | Bounded rows, forward cursor metadata, and summary. |
-| `ReviewEventQuery` | Application query | No | Bounded page size and opaque cursor for one case timeline. |
-| `ReviewBusinessEvent` | Application read model | No | Sanitized reviewer-visible business audit fact. |
-| `ReviewEventPage` | Application read model | No | Chronological business events and forward cursor metadata. |
-| `ReviewCaseDetails` | Application read model | No | Complete evidence snapshot for one case. |
-| `ReviewDecisionResult` | Application result | No | Decision, final status, version, and audit ID. |
-| `ReviewRepository` | Application port | N/A | Persistence operations required by review. |
-| `ReviewService` | Application service | Controlled | Reads cases and coordinates authoritative decisions. |
-| `ReviewerPrincipal` | Presentation security value | No | Identity established by the assessment auth adapter. |
-| `ReviewQueueRequest` | Presentation DTO | No | Strict HTTP query model mapped to `ReviewQueueQuery`. |
-| `ReviewEventRequest` | Presentation DTO | No | Strict timeline limit/cursor mapped to `ReviewEventQuery`. |
-| `DecisionRequest` | Presentation DTO | No | Strictly `outcome` plus mandatory `reason`. |
+These objects cover processing and decision facts, not every service operation.
+Authentication success/failure, reads, searches, validation/orchestration
+errors, and evidence access do not yet have comprehensive audit objects/flows.
+Abandoned running processing also has no recovery model. Both must be designed
+before production activation.
 
 ## Invariants by boundary
 
-```mermaid
-mindmap
-  root((Protected invariants))
-    Money
-      Decimal only
-      Finite and non-negative
-      Maximum two decimals
-      BRL currently supported
-    Submission
-      Stable request ID
-      Timezone-aware submission time
-      Non-empty OCR and category
-      Positive claim
-    Extraction
-      Success has facts and no error
-      Failure has error and no facts
-      Complete invocation trace persisted
-    Automated decision
-      Matching request ID
-      At least one reason
-      At least one versioned rule evaluation
-    Human decision
-      Pending-review state only
-      Authenticated canonical reviewer
-      Mandatory rationale
-      One immutable record per request
-    Audit
-      Actor and correlation ID
-      Enqueue and decision lifecycle events
-      Append-only database triggers
-    Concurrency
-      Positive version
-      ETag precondition
-      Transactional state/version recheck
-    Queue discovery
-      Server-side bounded page
-      Exact minor-unit amount comparison
-      Timezone-aware ranges and age buckets
-      Stable sort with request ID tie-breaker
-      Opaque query-bound cursor
-```
+| Boundary | Enforced invariant |
+| --- | --- |
+| Domain | Exact money, aware timestamps, non-blank IDs, valid state transitions, explainable decisions. |
+| Intake DTO | No unknown fields, bounded strings/list, email shape, plain finite decimal, aware ISO timestamp. |
+| Processing service | Actor/correlation required, invocation identity validated, extractor failures normalized, deterministic policy owns route. |
+| Repository | Expected state/version, canonical hash, foreign keys, atomic transitions, immutable evidence and events. |
+| HTTP | Authentication, CSRF/origin for writes, safe errors/results, ETag precondition for human decision. |
+| Browser | Server-side bounded discovery; evidence rendered as text; no credentials or sensitive payload in web storage. |
 
-## Object-to-storage mapping
-
-```mermaid
-flowchart LR
-    Submission["ReimbursementSubmission"] --> Reimbursements[("reimbursements")]
-    Attachments["AttachmentReference[]"] --> AttachmentRows[("attachments locations")]
-    Extraction["ExtractionResult"] --> ExtractionRows[("extractions + model_invocation_traces")]
-    Automated["AutomatedDecision"] --> AutomatedRows[("automated_decisions + reasons + rules")]
-    Problems["ReviewProblem[]"] --> ReviewRows[("review_cases + review_problems")]
-    Human["HumanDecision + ReviewerIdentity"] --> HumanRows[("human_decisions")]
-    Audit["AuditEvent"] --> AuditRows[("audit_events")]
-    QueueQuery["ReviewQueueQuery"] --> QueueRows[("indexed reimbursements + review_cases + extractions + review_problems")]
-    Cursor["opaque queue cursor"] --> Metadata[("application_metadata HMAC secret")]
-    QueueRows --> QueuePage["ReviewQueuePage"]
-```
-
-No reviewer account/session object or attachment-content object is persisted in
-the current schema. Standalone managed identity and authorized file access
-are production responsibilities, not implied implemented features.
+These invariants make the assessment auditable, but production still needs
+managed identity/authorization, attachment-byte integrity/access, asynchronous
+recovery, an immutable external audit export, and measured scale/accuracy.

@@ -1,5 +1,10 @@
 # Final design report outline
 
+> Historical planning artifact. The completed report is
+> [final-report.md](final-report.md); test counts and implementation boundaries
+> below reflect the earlier reviewer-only milestone and are intentionally not
+> the current system status.
+
 This is the evidence-backed structure for the assignment report. It preserves
 the reasoning path, including rejected alternatives, while describing only the
 current internal review console as active architecture. The option 2 interface

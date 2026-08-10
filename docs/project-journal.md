@@ -804,6 +804,78 @@ inputs rather than prerequisites for completing the repository.
 **Affected records:** D-012, D-013, D-026, D-041, D-042, A-004 through A-012,
 A-043, A-047, A-048, the final-report outline, and the time log.
 
+## 2026-08-10 - J-023 - End-to-end assessment completion
+
+**Question:** Could the missing assignment path be completed without inventing
+RecargaPay infrastructure, live-provider credentials, or artificial work/commit
+timestamps?
+
+**Decision:** Yes. Treat D-042's AWS topology as the accepted but unimplemented
+production target and finish the code-assessment path locally. Keep commits
+small and aligned with real milestones—policy, extractor adapters,
+acceptance/CI, workflow persistence, and HTTP APIs—without backdating commits or
+delaying them to simulate elapsed work.
+
+**Implementation result:** The repository now contains:
+
+- `BaselinePolicy` with exact BRL thresholds, `America/Sao_Paulo` receipt age,
+  exactly-90-day acceptance, old-receipt reject precedence, mismatch/uncertainty
+  review, and complete reason/rule evidence;
+- an offline deterministic extractor composed by default and an optional
+  bounded HTTPS+JSON adapter with no committed provider secret;
+- synchronous `ProcessingService` orchestration around short durable
+  transactions, received v1 → processing v2 → automated final v3, and existing
+  human pending v3 → final v4 behavior;
+- canonical submission fingerprints, safe replay versus divergent-ID conflict,
+  processing runs, immutable 1:N invocation attempts, protected raw output, and
+  business/technical/security event scopes;
+- strict authenticated/CSRF/same-origin `POST /api/requests` and safe exact-ID
+  all-status `GET /api/requests/{request_id}`;
+- follow-up hardening that rejects provider redirects, unsafe large JSON floats,
+  duplicate canonical reviewer IDs, and mutation of derived minor units even
+  when upgrading a database with the older trigger definition;
+  separates the verified `authenticated_caller` actor from claimed
+  `submitted_by`; and makes legacy backfill atomic;
+- the exact three assignment samples, boundary/integration/security/rollback
+  tests, pinned CI/build backends, pip/Actions Dependabot coverage, local run
+  instructions, and a final report.
+
+**Validation:** The final local run passed 140/140 automated tests with warnings
+treated as errors, Ruff, JavaScript syntax validation, and `git diff --check`.
+Acceptance results are `REQ-0001` and `REQ-0002` auto-approved and `REQ-0003`
+routed to human review. Real FastAPI-to-SQLite tests prove creation, replay,
+conflict, all-status lookup, trace protection, and pending v3 to human v4.
+
+**Release-gate finding:** Completing the assessment exposed blockers for real
+monetary use, not optional backlog: caller-controlled `submitted_at` currently
+anchors receipt age; caller-controlled `raw_ocr_text` can drive policy without
+application-owned bytes/checksum/trusted OCR; every Basic account has global
+scope without owner/role/case authorization or separation of duties; audit does
+not cover authentication, reads, searches, validation/orchestration errors, or
+evidence access comprehensively; and a crash can strand v2/running state without
+recovery. The assessment follows the supplied object contract, but production
+must close these gates before financial activation.
+
+**Policy-validation finding:** Old-receipt reject precedence over a simultaneous
+high-value review outcome, as well as the literal BRL 2,000 boundary treatment,
+is a tested assessment interpretation. It has not been confirmed by a policy
+owner and remains open for stakeholder validation.
+
+**Remaining boundary:** Receipt-byte upload/access, submitter/audit UIs,
+asynchronous queue/recovery, PostgreSQL/outbox, managed identity/authorization,
+immutable external audit export, cloud IaC/deployment, accuracy/load/security/
+recovery evidence, and approved retention remain absent. This is honest scope,
+not a claim of production readiness.
+
+**Timing:** The continuously recorded final implementation and documentation
+block started at `2026-08-10T19:47:09Z`; its exact finish and duration are
+recorded in `docs/time-log.md`. Earlier work remains untimed rather than assigned
+fabricated durations.
+
+**Affected records:** D-043 through D-047, A-004 through A-012, A-040 through
+A-042, A-048 through A-053, the executable README, system documentation, final
+report, and time log.
+
 ## Entry template
 
 ```text

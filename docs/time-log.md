@@ -29,6 +29,7 @@ required` instead of assigning fabricated values.
 | 2026-08-10 | Live local demonstration | not recorded | not recorded | estimate required | Seeded a disposable fictional database, started the assessment service, worked around embedded-browser HTTP Basic caching with a localhost-only temporary gateway, and visually verified queue, evidence detail, and business timeline without console errors; recorded J-019. |
 | 2026-08-10 | Kubernetes provisioning feasibility | not recorded | not recorded | estimate required | Evaluated standalone Amazon EKS and worker-only hybrid shapes; recorded D-041/J-020/A-047 without changing the accepted D-026 AWS serverless target. |
 | 2026-08-10 | Serverless confirmation and completion audit | not recorded | not recorded | estimate required | Closed Kubernetes as a current option, reaffirmed D-026 in D-042/J-021, compared the executable with the complete assignment, and recorded the remaining engineering and user-delivery inputs in J-022/A-048. |
+| 2026-08-10 | End-to-end assessment completion and final documentation | 16:47:09 -03 | 17:27:38 -03 | 40m 29s | Real continuous window (`2026-08-10T19:47:09Z`–`2026-08-10T20:27:38Z`): policy/extractors, acceptance/CI, workflow persistence, intake/results, hardening, final documentation, and final 140-test/Ruff/JavaScript/diff/build verification. No Git timestamps or earlier durations were fabricated. |
 
 ## Entry template
 
@@ -36,17 +37,10 @@ required` instead of assigning fabricated values.
 | YYYY-MM-DD | Work area | HH:MM | HH:MM | Nh Nm | Outcome and relevant decision IDs |
 ```
 
-## Final summary template
+## Honest recorded-time summary
 
-| Category | Total |
+| Category | Recorded total |
 | --- | ---: |
-| Discovery and assumptions | pending |
-| Domain model | pending |
-| Policy engine | pending |
-| Persistence and audit | pending |
-| Human review | pending |
-| AI/OCR integration | pending |
-| Interfaces | pending |
-| Tests and quality assurance | pending |
-| Documentation | pending |
-| **Total** | **pending** |
+| Final end-to-end completion block | 40m 29s |
+| Earlier discovery, design, implementation, QA, and documentation | not measured; estimate required |
+| **Honest known total** | **at least 40m 29s, plus unrecorded earlier work** |
