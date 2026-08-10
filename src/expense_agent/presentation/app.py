@@ -1,22 +1,37 @@
-"""FastAPI adapter for the non-technical, same-origin review screen."""
+"""FastAPI adapter for auditable intake and the same-origin review screen."""
 
 import hashlib
 import re
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    status,
+)
+from fastapi import Path as ApiPath
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from expense_agent.application.review import (
+from expense_agent.application import (
+    ExtractionSnapshot,
     PendingAgeBucket,
+    ProcessingService,
+    RequestConflictError,
+    RequestNotFoundError,
+    RequestResult,
     ReviewCaseDetails,
     ReviewConflictError,
     ReviewerIdentity,
@@ -29,9 +44,11 @@ from expense_agent.application.review import (
     ReviewQueueSort,
     ReviewService,
 )
-from expense_agent.domain.decisions import ReviewOutcome
+from expense_agent.domain.audit import AuditActor
+from expense_agent.domain.decisions import AutomatedDecision, ReviewOutcome
 from expense_agent.domain.exceptions import DomainValidationError
 from expense_agent.domain.extraction import ExtractionResult, ReceiptFacts
+from expense_agent.domain.reimbursement import AttachmentReference, ReimbursementSubmission
 from expense_agent.domain.value_objects import Money
 from expense_agent.presentation.security import (
     BasicAuthenticator,
@@ -41,6 +58,9 @@ from expense_agent.presentation.security import (
 
 STATIC_DIRECTORY = Path(__file__).with_name("static")
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+SUBMITTER_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+DECIMAL_AMOUNT_PATTERN = re.compile(r"^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$")
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; "
     "script-src 'self'; "
@@ -68,6 +88,101 @@ class DecisionRequest(BaseModel):
         if not normalized:
             raise ValueError("reason must not be blank")
         return normalized
+
+
+class IntakeRequest(BaseModel):
+    """Strict business input; the authoritative audit actor is not accepted here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=128)
+    submitted_by: str = Field(min_length=3, max_length=320)
+    submitted_at: datetime
+    raw_ocr_text: str = Field(min_length=1, max_length=250_000)
+    claimed_category: str = Field(min_length=1, max_length=200)
+    claimed_amount_brl: Decimal = Field(gt=0, max_digits=18, decimal_places=2)
+    attachments: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("request_id")
+    @classmethod
+    def normalize_request_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if REQUEST_ID_PATTERN.fullmatch(normalized) is None:
+            raise ValueError("request_id contains unsupported characters")
+        return normalized
+
+    @field_validator("submitted_by")
+    @classmethod
+    def normalize_submitter(cls, value: str) -> str:
+        normalized = value.strip()
+        if SUBMITTER_PATTERN.fullmatch(normalized) is None:
+            raise ValueError("submitted_by must be a bounded email address")
+        return normalized
+
+    @field_validator("submitted_at", mode="before")
+    @classmethod
+    def require_timestamp_string(cls, value: object) -> object:
+        if not isinstance(value, str) or len(value) > 64:
+            raise ValueError("submitted_at must be an ISO 8601 string")
+        return value
+
+    @field_validator("submitted_at")
+    @classmethod
+    def require_timestamp_timezone(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("submitted_at must include timezone information")
+        return value
+
+    @field_validator("raw_ocr_text", "claimed_category")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be blank")
+        return normalized
+
+    @field_validator("claimed_amount_brl", mode="before")
+    @classmethod
+    def parse_exact_brl_amount(cls, value: object) -> object:
+        if isinstance(value, bool):
+            # Pydantic converts ValueError (but intentionally not TypeError) into HTTP 422.
+            raise ValueError("claimed_amount_brl must not be a boolean")  # noqa: TRY004
+        if not isinstance(value, (str, int, float, Decimal)):
+            return value
+        text = str(value)
+        if DECIMAL_AMOUNT_PATTERN.fullmatch(text) is None:
+            raise ValueError(
+                "claimed_amount_brl must use plain decimal notation with at most two decimals"
+            )
+        try:
+            amount = Decimal(text)
+        except InvalidOperation as exc:
+            raise ValueError("claimed_amount_brl must be a valid decimal") from exc
+        return amount.quantize(Decimal("0.01"))
+
+    @field_validator("attachments")
+    @classmethod
+    def normalize_attachments(cls, value: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for attachment in value:
+            item = attachment.strip()
+            if not item or len(item) > 2_048:
+                raise ValueError("attachment references must contain 1 to 2048 characters")
+            normalized.append(item)
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("attachment references must be unique")
+        return normalized
+
+    def to_submission(self) -> ReimbursementSubmission:
+        return ReimbursementSubmission(
+            request_id=self.request_id,
+            submitted_by=self.submitted_by,
+            submitted_at=self.submitted_at,
+            raw_ocr_text=self.raw_ocr_text,
+            claimed_category=self.claimed_category,
+            claimed_amount=Money(amount=self.claimed_amount_brl),
+            attachments=tuple(AttachmentReference(item) for item in self.attachments),
+        )
 
 
 class ReviewQueueRequest(BaseModel):
@@ -179,11 +294,12 @@ def create_app(
     csrf: CsrfProtector,
     require_https: bool,
     allowed_hosts: tuple[str, ...],
+    processing_service: ProcessingService | None = None,
 ) -> FastAPI:
     """Create an HTTP adapter around injected application/security ports."""
 
     app = FastAPI(
-        title="Expense Agent human review",
+        title="Expense Agent",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -268,6 +384,30 @@ def create_app(
     async def domain_validation_handler(_request: Request, exc: DomainValidationError):
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(_request: Request, exc: RequestValidationError):
+        # Never reflect raw OCR, credentials, or non-finite values from invalid input.
+        errors = [
+            {
+                "type": error["type"],
+                "loc": list(error["loc"]),
+                "msg": error["msg"],
+            }
+            for error in exc.errors()
+        ]
+        return JSONResponse(status_code=422, content={"detail": errors})
+
+    @app.exception_handler(RequestNotFoundError)
+    async def request_not_found_handler(_request: Request, _exc: RequestNotFoundError):
+        return JSONResponse(status_code=404, content={"detail": "Request not found"})
+
+    @app.exception_handler(RequestConflictError)
+    async def request_conflict_handler(_request: Request, _exc: RequestConflictError):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Request ID already exists with a different payload"},
+        )
+
     @app.get("/", include_in_schema=False)
     def root() -> RedirectResponse:
         return RedirectResponse(url="/reviews", status_code=307)
@@ -290,6 +430,42 @@ def create_app(
             },
             "csrf_token": csrf.issue(reviewer.reviewer_id),
         }
+
+    @app.post("/api/requests")
+    def submit_request(
+        request: Request,
+        command: IntakeRequest,
+        actor: Annotated[ReviewerPrincipal, Depends(require_csrf_and_same_origin)],
+    ) -> JSONResponse:
+        service = _require_processing_service(processing_service)
+        correlation_id = _correlation_id(request)
+        outcome = service.process(
+            command.to_submission(),
+            actor=AuditActor(actor_type="submitter", actor_id=actor.reviewer_id),
+            correlation_id=correlation_id,
+        )
+        content = _request_result(outcome.result)
+        content["created"] = outcome.created
+        content["replayed"] = outcome.replayed
+        return JSONResponse(
+            status_code=201 if outcome.created else 200,
+            content=content,
+            headers={
+                "Location": f"/api/requests/{outcome.result.request_id}",
+                "X-Correlation-ID": correlation_id,
+            },
+        )
+
+    @app.get("/api/requests/{request_id}")
+    def request_result(
+        request_id: Annotated[
+            str,
+            ApiPath(min_length=1, max_length=128, pattern=REQUEST_ID_PATTERN.pattern),
+        ],
+        _actor: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+    ) -> dict[str, Any]:
+        service = _require_processing_service(processing_service)
+        return _request_result(service.get_result(request_id))
 
     @app.get("/api/reviews")
     def pending_reviews(
@@ -336,12 +512,7 @@ def create_app(
                 status_code=status.HTTP_412_PRECONDITION_FAILED,
                 detail="The review case version has changed",
             )
-        supplied_correlation_id = request.headers.get("X-Correlation-ID", "")
-        correlation_id = (
-            supplied_correlation_id
-            if CORRELATION_ID_PATTERN.fullmatch(supplied_correlation_id)
-            else uuid4().hex
-        )
+        correlation_id = _correlation_id(request)
         result = review_service.decide(
             request_id=request_id,
             outcome=command.outcome,
@@ -471,30 +642,7 @@ def _case_details(details: ReviewCaseDetails) -> dict[str, Any]:
             }
             for problem in details.problems
         ],
-        "automated_decision": {
-            "decision_id": automated.decision_id,
-            "route": automated.route.value,
-            "decided_at": _timestamp(automated.decided_at),
-            "policy_version": automated.policy_version,
-            "reasons": [
-                {
-                    "code": reason.code,
-                    "message": reason.message,
-                    "evidence": dict(reason.evidence),
-                }
-                for reason in automated.reasons
-            ],
-            "rule_evaluations": [
-                {
-                    "rule_id": evaluation.rule_id,
-                    "rule_version": evaluation.rule_version,
-                    "outcome": evaluation.outcome.value,
-                    "message": evaluation.message,
-                    "facts": dict(evaluation.facts),
-                }
-                for evaluation in automated.rule_evaluations
-            ],
-        },
+        "automated_decision": _automated_decision(automated),
     }
     if details.human_decision is not None and details.reviewed_by is not None:
         payload["human_decision"] = {
@@ -532,6 +680,101 @@ def _extraction(extraction: ExtractionResult | None) -> dict[str, Any] | None:
             "parameters": dict(trace.parameters),
         },
     }
+
+
+def _request_result(result: RequestResult) -> dict[str, Any]:
+    """Return business-safe request state without storage or technical trace internals."""
+
+    review: dict[str, Any] | None = None
+    if result.review_status is not None and result.pending_since is not None:
+        review = {
+            "status": result.review_status.value,
+            "pending_since": _timestamp(result.pending_since),
+            "human_decision": None,
+        }
+        if result.human_decision is not None:
+            review["human_decision"] = {
+                "decision_id": result.human_decision.decision_id,
+                "outcome": result.human_decision.outcome.value,
+                "reason": result.human_decision.reason,
+                "decided_at": _timestamp(result.human_decision.decided_at),
+            }
+
+    return {
+        "request_id": result.request_id,
+        "submitted_by": result.submission.submitted_by,
+        "submitted_at": _timestamp(result.submission.submitted_at),
+        "opened_at": _timestamp(result.opened_at),
+        "claimed_category": result.submission.claimed_category,
+        "claimed_amount": _money(result.submission.claimed_amount),
+        "status": result.status.value,
+        "version": result.version,
+        "extraction": _extraction_snapshot(result.extraction),
+        "problems": [
+            {
+                "code": problem.code,
+                "message": problem.message,
+                "evidence": dict(problem.evidence),
+            }
+            for problem in result.problems
+        ],
+        "automated_decision": (
+            _automated_decision(result.automated_decision)
+            if result.automated_decision is not None
+            else None
+        ),
+        "review": review,
+    }
+
+
+def _extraction_snapshot(extraction: ExtractionSnapshot | None) -> dict[str, Any] | None:
+    if extraction is None:
+        return None
+    return {
+        "status": extraction.status.value,
+        "error": extraction.error,
+        "facts": _receipt_facts(extraction.facts),
+    }
+
+
+def _automated_decision(decision: AutomatedDecision) -> dict[str, Any]:
+    return {
+        "decision_id": decision.decision_id,
+        "route": decision.route.value,
+        "decided_at": _timestamp(decision.decided_at),
+        "policy_version": decision.policy_version,
+        "reasons": [
+            {
+                "code": reason.code,
+                "message": reason.message,
+                "evidence": dict(reason.evidence),
+            }
+            for reason in decision.reasons
+        ],
+        "rule_evaluations": [
+            {
+                "rule_id": evaluation.rule_id,
+                "rule_version": evaluation.rule_version,
+                "outcome": evaluation.outcome.value,
+                "message": evaluation.message,
+                "facts": dict(evaluation.facts),
+            }
+            for evaluation in decision.rule_evaluations
+        ],
+    }
+
+
+def _require_processing_service(
+    processing_service: ProcessingService | None,
+) -> ProcessingService:
+    if processing_service is None:
+        raise HTTPException(status_code=503, detail="Request processing is not configured")
+    return processing_service
+
+
+def _correlation_id(request: Request) -> str:
+    supplied = request.headers.get("X-Correlation-ID", "")
+    return supplied if CORRELATION_ID_PATTERN.fullmatch(supplied) else uuid4().hex
 
 
 def _receipt_facts(facts: ReceiptFacts | None) -> dict[str, Any] | None:
