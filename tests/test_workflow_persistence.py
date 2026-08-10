@@ -330,6 +330,113 @@ def test_late_finalization_audit_failure_rolls_back_financial_outcome(tmp_path) 
         assert connection.execute("SELECT COUNT(*) FROM review_cases").fetchone()[0] == 0
 
 
+def test_claimed_minor_units_cannot_diverge_from_the_immutable_submission(tmp_path) -> None:
+    database_path = tmp_path / "immutable-minor-units.db"
+    repository = SqliteReviewRepository(database_path)
+    submission = _submission("REQ-IMMUTABLE-AMOUNT")
+    _service(
+        repository,
+        StubExtractor(receipt_date=date(2026, 4, 10), total="100.00"),
+    ).process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-immutable-amount",
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        before = connection.execute(
+            """
+            SELECT claimed_amount, claimed_amount_minor, submission_hash
+            FROM reimbursements WHERE request_id = ?
+            """,
+            (submission.request_id,),
+        ).fetchone()
+        with pytest.raises(sqlite3.IntegrityError, match="submission is immutable"):
+            connection.execute(
+                """
+                UPDATE reimbursements SET claimed_amount_minor = 1
+                WHERE request_id = ?
+                """,
+                (submission.request_id,),
+            )
+        after = connection.execute(
+            """
+            SELECT claimed_amount, claimed_amount_minor, submission_hash
+            FROM reimbursements WHERE request_id = ?
+            """,
+            (submission.request_id,),
+        ).fetchone()
+
+    assert before == ("100.00", 10_000, submission_fingerprint(submission))
+    assert after == before
+
+
+def test_legacy_workflow_backfill_rolls_back_as_one_transaction(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "legacy-backfill-rollback.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE reimbursements (
+                request_id TEXT PRIMARY KEY,
+                submitted_by TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                raw_ocr_text TEXT NOT NULL,
+                claimed_category TEXT NOT NULL,
+                claimed_amount TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                opened_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                version INTEGER NOT NULL
+            );
+            INSERT INTO reimbursements VALUES (
+                'LEGACY-ATOMIC', 'legacy@example.com', '2026-04-10T12:00:00+00:00',
+                'LEGACY OCR', 'meals', '100.00', 'BRL',
+                '2026-04-10T12:00:00+00:00', 'received', 1
+            );
+            """
+        )
+
+    def fail_after_partial_backfill(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            """
+            INSERT INTO processing_runs (
+                processing_run_id, request_id, run_number, pipeline_version,
+                input_hash, status, started_at, completed_at, error, correlation_id
+            ) VALUES (
+                'PARTIAL-RUN', 'LEGACY-ATOMIC', 1, 'legacy-test-v1',
+                'legacy-input-hash', 'running', '2026-04-10T12:00:00+00:00',
+                NULL, NULL, 'legacy:test'
+            )
+            """
+        )
+        raise RuntimeError("injected legacy backfill failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            SqliteReviewRepository,
+            "_backfill_workflow_records",
+            staticmethod(fail_after_partial_backfill),
+        )
+        with pytest.raises(RuntimeError, match="injected legacy backfill failure"):
+            SqliteReviewRepository(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM processing_runs").fetchone()[0] == 0
+
+    recovered = SqliteReviewRepository(database_path)
+    with sqlite3.connect(recovered.database_path) as connection:
+        migrated = connection.execute(
+            """
+            SELECT claimed_amount_minor, submission_hash
+            FROM reimbursements WHERE request_id = 'LEGACY-ATOMIC'
+            """
+        ).fetchone()
+        assert connection.execute("SELECT COUNT(*) FROM processing_runs").fetchone()[0] == 0
+    assert migrated is not None
+    assert migrated[0] == 10_000
+    assert isinstance(migrated[1], str) and migrated[1]
+
+
 def test_repository_supports_multiple_immutable_attempts_without_business_timeline_leak(
     tmp_path,
 ) -> None:

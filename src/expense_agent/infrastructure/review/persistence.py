@@ -349,7 +349,7 @@ END;
 CREATE TRIGGER IF NOT EXISTS reimbursements_submission_immutable
 BEFORE UPDATE OF
     submission_hash, submitted_by, submitted_at, raw_ocr_text,
-    claimed_category, claimed_amount, currency, opened_at
+    claimed_category, claimed_amount, claimed_amount_minor, currency, opened_at
 ON reimbursements
 BEGIN
     SELECT RAISE(ABORT, 'reimbursement submission is immutable');
@@ -536,7 +536,14 @@ class SqliteReviewRepository:
             self._migrate_workflow_columns(connection)
             connection.executescript(_QUEUE_SCHEMA)
             connection.executescript(_WORKFLOW_SCHEMA)
-            self._backfill_workflow_records(connection)
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._backfill_workflow_records(connection)
+            except BaseException:
+                connection.rollback()
+                raise
+            else:
+                connection.commit()
             connection.executescript(_WORKFLOW_IMMUTABILITY_SCHEMA)
             connection.execute(
                 "INSERT OR IGNORE INTO application_metadata (key, value) VALUES (?, ?)",
