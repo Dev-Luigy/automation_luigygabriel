@@ -355,6 +355,15 @@ BEGIN
     SELECT RAISE(ABORT, 'reimbursement submission is immutable');
 END;
 
+-- A separate versioned trigger is intentional: SQLite does not replace the
+-- older reimbursements_submission_immutable definition on an existing
+-- database when CREATE TRIGGER IF NOT EXISTS runs during an upgrade.
+CREATE TRIGGER IF NOT EXISTS reimbursements_claimed_amount_minor_immutable_v2
+BEFORE UPDATE OF claimed_amount_minor ON reimbursements
+BEGIN
+    SELECT RAISE(ABORT, 'reimbursement submission is immutable');
+END;
+
 CREATE TRIGGER IF NOT EXISTS attachments_no_update
 BEFORE UPDATE ON attachments
 BEGIN

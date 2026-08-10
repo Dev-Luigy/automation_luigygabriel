@@ -371,6 +371,56 @@ def test_claimed_minor_units_cannot_diverge_from_the_immutable_submission(tmp_pa
     assert after == before
 
 
+def test_existing_database_receives_versioned_minor_unit_immutability_trigger(tmp_path) -> None:
+    database_path = tmp_path / "minor-unit-trigger-upgrade.db"
+    repository = SqliteReviewRepository(database_path)
+    submission = _submission("REQ-MINOR-TRIGGER-UPGRADE")
+    _service(
+        repository,
+        StubExtractor(receipt_date=date(2026, 4, 10), total="100.00"),
+    ).process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-minor-trigger-upgrade",
+    )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(
+            """
+            DROP TRIGGER reimbursements_claimed_amount_minor_immutable_v2;
+            DROP TRIGGER reimbursements_submission_immutable;
+            CREATE TRIGGER reimbursements_submission_immutable
+            BEFORE UPDATE OF
+                submission_hash, submitted_by, submitted_at, raw_ocr_text,
+                claimed_category, claimed_amount, currency, opened_at
+            ON reimbursements
+            BEGIN
+                SELECT RAISE(ABORT, 'reimbursement submission is immutable');
+            END;
+            """
+        )
+
+    SqliteReviewRepository(database_path)
+
+    with sqlite3.connect(database_path) as connection:
+        installed = connection.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type = 'trigger'
+              AND name = 'reimbursements_claimed_amount_minor_immutable_v2'
+            """
+        ).fetchone()
+        assert installed == (1,)
+        with pytest.raises(sqlite3.IntegrityError, match="submission is immutable"):
+            connection.execute(
+                """
+                UPDATE reimbursements SET claimed_amount_minor = 1
+                WHERE request_id = ?
+                """,
+                (submission.request_id,),
+            )
+
+
 def test_legacy_workflow_backfill_rolls_back_as_one_transaction(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "legacy-backfill-rollback.db"
     with sqlite3.connect(database_path) as connection:
