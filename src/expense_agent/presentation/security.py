@@ -112,27 +112,33 @@ class BasicAuthenticator:
         if not credentials:
             raise SecurityConfigurationError("at least one reviewer is required")
         by_username: dict[str, ReviewerCredential] = {}
+        reviewer_ids: set[str] = set()
         for credential in credentials:
             username = credential.username.strip()
+            reviewer_id = credential.reviewer_id.strip()
+            email = credential.email.strip()
+            display_name = credential.display_name.strip()
+            password_hash = credential.password_hash.strip()
             if not username:
                 raise SecurityConfigurationError("reviewer username must not be blank")
             if username in by_username:
                 raise SecurityConfigurationError(f"duplicate reviewer username: {username}")
-            if not all(
-                value.strip()
-                for value in (
-                    credential.reviewer_id,
-                    credential.email,
-                    credential.display_name,
-                    credential.password_hash,
-                )
-            ):
+            if not all((reviewer_id, email, display_name, password_hash)):
                 raise SecurityConfigurationError("reviewer fields must not be blank")
-            if _parse_password_hash(credential.password_hash) is None:
+            if _parse_password_hash(password_hash) is None:
                 raise SecurityConfigurationError(
                     f"reviewer {username!r} has an invalid PBKDF2 password hash"
                 )
-            by_username[username] = credential
+            if reviewer_id in reviewer_ids:
+                raise SecurityConfigurationError(f"duplicate reviewer_id: {reviewer_id}")
+            by_username[username] = ReviewerCredential(
+                username=username,
+                reviewer_id=reviewer_id,
+                email=email,
+                display_name=display_name,
+                password_hash=password_hash,
+            )
+            reviewer_ids.add(reviewer_id)
         self._credentials = by_username
         self._dummy_hash = hash_password(secrets.token_urlsafe(32))
 

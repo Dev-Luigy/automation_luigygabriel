@@ -264,7 +264,9 @@ def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
     assert fetched.json()["automated_decision"]["route"] == "auto_approved"
 
     assert service.submissions[0].submitted_by == "ana.silva@company.com"
-    assert service.actors == [AuditActor(actor_type="submitter", actor_id="directory:42")]
+    assert service.actors == [
+        AuditActor(actor_type="authenticated_caller", actor_id="directory:42")
+    ]
     serialized = created.text + fetched.text
     assert "raw_ocr_text" not in serialized
     assert "receipt_0001.jpg" not in serialized
@@ -352,6 +354,39 @@ def test_intake_rejects_nonstandard_json_nan_if_the_parser_accepts_it() -> None:
     assert response.status_code == 422
     assert "input" not in response.text
     assert "NaN" not in response.text
+
+
+def test_intake_rejects_json_float_above_safe_integer_precision() -> None:
+    client, service = _client()
+    headers = _write_headers(client)
+    encoded = json.dumps(_payload()).replace(
+        '"claimed_amount_brl": "93.50"',
+        '"claimed_amount_brl": 70368744177664.01',
+    )
+
+    response = client.post(
+        "/api/requests",
+        headers={**headers, "Content-Type": "application/json"},
+        content=encoded,
+    )
+    exact_string = client.post(
+        "/api/requests",
+        headers=headers,
+        json=_payload(
+            request_id="REQ-LARGE-DECIMAL-STRING",
+            amount="70368744177664.01",
+        ),
+    )
+
+    assert response.status_code == 422
+    assert "safe JSON-number precision limit" in response.text
+    assert "use a decimal string" in response.text
+    assert exact_string.status_code == 201
+    assert exact_string.json()["claimed_amount"] == {
+        "amount": "70368744177664.01",
+        "currency": "BRL",
+    }
+    assert len(service.submissions) == 1
 
 
 @pytest.mark.parametrize(
@@ -460,7 +495,7 @@ def test_real_sqlite_http_pipeline_is_idempotent_audited_and_queryable(tmp_path:
             """
         ).fetchall()
     assert reimbursement == ("ana.silva@company.com", "auto_approved", 3)
-    assert received_actor == ("submitter", "directory:42")
+    assert received_actor == ("authenticated_caller", "directory:42")
     assert attempts is not None and attempts[0] == 1 and attempts[1] > 0
     assert {row[0] for row in replay_events} == {
         "reimbursement_intake_replayed",

@@ -61,6 +61,11 @@ CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SUBMITTER_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 DECIMAL_AMOUNT_PATTERN = re.compile(r"^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$")
+# Below 2**46 a binary64 ULP is at most 0.0078125, so rounding error remains
+# below half a cent and a value with at most two decimal places can be recovered
+# by the Decimal quantization below. At and above this binade, distinct cent
+# amounts can collapse to the same JSON float and must arrive as strings.
+JSON_FLOAT_EXACT_CENTS_LIMIT = 2**46
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; "
     "script-src 'self'; "
@@ -147,6 +152,11 @@ class IntakeRequest(BaseModel):
         if isinstance(value, bool):
             # Pydantic converts ValueError (but intentionally not TypeError) into HTTP 422.
             raise ValueError("claimed_amount_brl must not be a boolean")  # noqa: TRY004
+        if isinstance(value, float) and abs(value) >= JSON_FLOAT_EXACT_CENTS_LIMIT:
+            raise ValueError(
+                "claimed_amount_brl exceeds the safe JSON-number precision limit; "
+                "use a decimal string"
+            )
         if not isinstance(value, (str, int, float, Decimal)):
             return value
         text = str(value)
@@ -441,7 +451,10 @@ def create_app(
         correlation_id = _correlation_id(request)
         outcome = service.process(
             command.to_submission(),
-            actor=AuditActor(actor_type="submitter", actor_id=actor.reviewer_id),
+            actor=AuditActor(
+                actor_type="authenticated_caller",
+                actor_id=actor.reviewer_id,
+            ),
             correlation_id=correlation_id,
         )
         content = _request_result(outcome.result)

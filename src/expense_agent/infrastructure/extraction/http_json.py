@@ -12,7 +12,7 @@ from types import MappingProxyType
 from typing import Any, Protocol, Self
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from expense_agent.domain import ExtractionResult, ExtractionStatus, ReimbursementSubmission
 from expense_agent.infrastructure.extraction._support import (
@@ -260,7 +260,30 @@ class HttpJsonReceiptExtractor:
 
 
 def _urlopen(request: Request, timeout: float) -> HttpResponse:
-    return urlopen(request, timeout=timeout)
+    # The configured endpoint is an explicit trust boundary. Following a 3xx
+    # could otherwise forward the Authorization header to another origin (or
+    # downgrade transport), so redirects fail closed and are handled as an
+    # extraction failure by the caller.
+    return build_opener(_RejectRedirects()).open(request, timeout=timeout)
+
+
+class _RejectRedirects(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        request: Request,
+        file_pointer: Any,
+        code: int,
+        message: str,
+        headers: Any,
+        new_url: str,
+    ) -> None:
+        raise HTTPError(
+            request.full_url,
+            code,
+            "provider redirects are not allowed",
+            headers,
+            file_pointer,
+        )
 
 
 def _bounded_http_error_body(error: HTTPError, max_response_bytes: int) -> str:

@@ -46,6 +46,20 @@ def test_authenticator_returns_only_configured_canonical_identity() -> None:
     assert authenticator.authenticate("forged-user", "correct horse") is None
 
 
+def test_authenticator_rejects_duplicate_canonical_reviewer_id() -> None:
+    first = _credential()
+    second = ReviewerCredential(
+        username="another-reviewer",
+        reviewer_id=f" {first.reviewer_id} ",
+        email="another-reviewer@example.com",
+        display_name="Another Finance Reviewer",
+        password_hash=hash_password("another password", iterations=100_000),
+    )
+
+    with pytest.raises(SecurityConfigurationError, match="duplicate reviewer_id"):
+        BasicAuthenticator((first, second))
+
+
 def test_csrf_token_is_bound_to_identity_signature_and_expiry() -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     protector = CsrfProtector("a" * 32, ttl=timedelta(minutes=15))

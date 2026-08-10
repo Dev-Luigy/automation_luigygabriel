@@ -12,6 +12,7 @@ from expense_agent.infrastructure.extraction import (
     DeterministicReceiptExtractor,
     HttpJsonExtractorConfig,
     HttpJsonReceiptExtractor,
+    http_json,
 )
 
 SAMPLE_OCR = {
@@ -330,6 +331,45 @@ def test_http_adapter_turns_timeout_into_failure_and_never_exposes_secret() -> N
     assert secret not in repr(config)
     assert secret not in (result.error or "")
     assert secret not in result.trace.raw_response
+
+
+def test_default_http_transport_rejects_redirects_before_authorization_can_move(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response = StubResponse(b"{}")
+    installed_handlers: list[object] = []
+
+    class StubOpener:
+        def open(self, request: Request, *, timeout: float) -> StubResponse:
+            assert request.full_url == "https://extractor.example.test/v1/extract"
+            assert timeout == 3.5
+            return response
+
+    def build_opener(*handlers: object) -> StubOpener:
+        installed_handlers.extend(handlers)
+        return StubOpener()
+
+    monkeypatch.setattr(http_json, "build_opener", build_opener)
+    request = Request(
+        "https://extractor.example.test/v1/extract",
+        headers={"Authorization": "Bearer must-not-move"},
+    )
+
+    assert http_json._urlopen(request, 3.5) is response
+    redirect_handler = next(
+        handler
+        for handler in installed_handlers
+        if isinstance(handler, http_json._RejectRedirects)
+    )
+    with pytest.raises(http_json.HTTPError, match="redirects are not allowed"):
+        redirect_handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {},
+            "https://attacker.example.test/capture",
+        )
 
 
 @pytest.mark.parametrize(
