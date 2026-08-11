@@ -282,6 +282,9 @@ Outputs:
   ReviewUrl:
     Description: Open this URL after deployment and sign in with the configured reviewer.
     Value: !Sub "https://${ReviewHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/reviews"
+  SubmitUrl:
+    Description: Open this URL to upload and track a synthetic reimbursement.
+    Value: !Sub "https://${ReviewHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/submit"
   FileSystemId:
     Description: Retained EFS filesystem containing the sandbox SQLite file.
     Value: !Ref ReviewFileSystem

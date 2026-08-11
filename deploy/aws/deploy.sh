@@ -136,6 +136,7 @@ fi
 unset ea_reviewer_password ea_reviewer_password_hash ea_csrf_secret
 echo
 echo "Assessment sandbox deployed."
+echo "Submit UI: ${ea_api_url}/submit"
 echo "Review UI: ${ea_api_url}/reviews"
 echo "Username:  ${ea_reviewer_username}"
 echo "Safety:    synthetic assessment data only; this is not the production target."
