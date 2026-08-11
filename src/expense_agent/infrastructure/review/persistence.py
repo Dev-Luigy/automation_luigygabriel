@@ -15,6 +15,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from expense_agent.application.operational_audit import OperationalAuditEvent
 from expense_agent.application.review import (
     PendingAgeBucket,
     ReviewBusinessEvent,
@@ -480,6 +481,65 @@ BEGIN
 END;
 """
 
+_OPERATIONAL_AUDIT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS operational_audit_events (
+    event_id TEXT PRIMARY KEY CHECK (length(trim(event_id)) BETWEEN 1 AND 64),
+    occurred_at TEXT NOT NULL,
+    correlation_id TEXT NOT NULL CHECK (length(trim(correlation_id)) BETWEEN 1 AND 128),
+    request_id TEXT CHECK (
+        request_id IS NULL OR length(trim(request_id)) BETWEEN 1 AND 128
+    ),
+    actor_type TEXT CHECK (
+        actor_type IS NULL OR length(trim(actor_type)) BETWEEN 1 AND 64
+    ),
+    actor_id TEXT CHECK (
+        actor_id IS NULL OR length(trim(actor_id)) BETWEEN 1 AND 320
+    ),
+    operation_type TEXT NOT NULL CHECK (
+        length(trim(operation_type)) BETWEEN 1 AND 64
+    ),
+    http_method TEXT NOT NULL CHECK (length(trim(http_method)) BETWEEN 1 AND 16),
+    route TEXT NOT NULL CHECK (
+        length(trim(route)) BETWEEN 1 AND 256
+        AND instr(route, '?') = 0
+        AND instr(route, '#') = 0
+    ),
+    status_code INTEGER NOT NULL CHECK (status_code BETWEEN 100 AND 599),
+    outcome TEXT NOT NULL CHECK (
+        outcome IN ('succeeded', 'client_error', 'server_error')
+    ),
+    authentication TEXT NOT NULL CHECK (
+        authentication IN ('not_attempted', 'succeeded', 'failed')
+    ),
+    duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+    metadata_json TEXT NOT NULL CHECK (length(metadata_json) <= 4096),
+    CHECK (
+        (actor_type IS NULL AND actor_id IS NULL)
+        OR (actor_type IS NOT NULL AND actor_id IS NOT NULL)
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_operational_audit_time
+    ON operational_audit_events(occurred_at, event_id);
+CREATE INDEX IF NOT EXISTS idx_operational_audit_correlation
+    ON operational_audit_events(correlation_id, occurred_at, event_id);
+CREATE INDEX IF NOT EXISTS idx_operational_audit_request
+    ON operational_audit_events(request_id, occurred_at, event_id)
+    WHERE request_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS operational_audit_events_no_update
+BEFORE UPDATE ON operational_audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'operational audit events are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS operational_audit_events_no_delete
+BEFORE DELETE ON operational_audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'operational audit events are append-only');
+END;
+"""
+
 _HIGH_VALUE_THRESHOLD = Money.brl("2000.00")
 _AMOUNT_MISMATCH_CODES = ("AMOUNT_MISMATCH", "TOTAL_MISMATCH")
 _BUSINESS_EVENT_PAYLOAD_FIELDS = {
@@ -545,6 +605,7 @@ class SqliteReviewRepository:
     def initialize_schema(self) -> None:
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
+            connection.executescript(_OPERATIONAL_AUDIT_SCHEMA)
             self._migrate_minor_unit_columns(connection)
             self._migrate_workflow_columns(connection)
             connection.executescript(_QUEUE_SCHEMA)
@@ -2161,6 +2222,46 @@ class SqliteReviewRepository:
             raise ReviewConflictError(
                 "the review decision conflicts with an existing immutable record"
             ) from exc
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    def record_operation(self, event: OperationalAuditEvent) -> None:
+        """Append one sanitized service-operation event in its own transaction."""
+
+        if not isinstance(event, OperationalAuditEvent):
+            raise DomainValidationError("event must be an OperationalAuditEvent")
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO operational_audit_events (
+                    event_id, occurred_at, correlation_id, request_id,
+                    actor_type, actor_id, operation_type, http_method, route,
+                    status_code, outcome, authentication, duration_ms, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    _timestamp_to_db(event.occurred_at),
+                    event.correlation_id,
+                    event.request_id,
+                    event.actor_type,
+                    event.actor_id,
+                    event.operation_type,
+                    event.http_method,
+                    event.route,
+                    event.status_code,
+                    event.outcome.value,
+                    event.authentication.value,
+                    event.duration_ms,
+                    _canonical_json(event.metadata),
+                ),
+            )
+            connection.commit()
         except BaseException:
             connection.rollback()
             raise

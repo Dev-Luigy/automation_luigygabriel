@@ -2,9 +2,10 @@
 
 import hashlib
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from time import monotonic_ns
 from typing import Annotated, Any
 from uuid import uuid4
 
@@ -23,10 +24,15 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from expense_agent.application import (
     ExtractionSnapshot,
+    OperationalAuditEvent,
+    OperationalAuditOutcome,
+    OperationalAuditRecorder,
+    OperationalAuthenticationOutcome,
     PendingAgeBucket,
     ProcessingService,
     RequestConflictError,
@@ -78,6 +84,17 @@ CONTENT_SECURITY_POLICY = (
     "form-action 'self'; "
     "frame-ancestors 'none'"
 )
+OPERATION_TYPES = {
+    ("GET", "/"): "root_redirect",
+    ("GET", "/reviews"): "reviewer_page_read",
+    ("GET", "/api/session"): "reviewer_session_read",
+    ("POST", "/api/requests"): "reimbursement_submit",
+    ("GET", "/api/requests/{request_id}"): "reimbursement_result_read",
+    ("GET", "/api/reviews"): "review_queue_search",
+    ("GET", "/api/reviews/{request_id}"): "review_case_read",
+    ("GET", "/api/reviews/{request_id}/events"): "review_timeline_read",
+    ("POST", "/api/reviews/{request_id}/decisions"): "review_decision_submit",
+}
 
 
 class DecisionRequest(BaseModel):
@@ -305,6 +322,7 @@ def create_app(
     require_https: bool,
     allowed_hosts: tuple[str, ...],
     processing_service: ProcessingService | None = None,
+    operational_audit_recorder: OperationalAuditRecorder | None = None,
 ) -> FastAPI:
     """Create an HTTP adapter around injected application/security ports."""
 
@@ -317,31 +335,76 @@ def create_app(
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
     app.mount("/assets", StaticFiles(directory=STATIC_DIRECTORY), name="assets")
     basic = HTTPBasic(auto_error=False)
+    audit_recorder = operational_audit_recorder or review_service.operational_audit_recorder
+    if audit_recorder is None:
+        raise ValueError("create_app requires a durable operational audit recorder")
 
     @app.middleware("http")
     async def transport_and_browser_security(request: Request, call_next):
-        if require_https and request.url.scheme != "https":
-            response = JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"detail": "HTTPS is required"},
-            )
-        else:
-            response = await call_next(request)
-        response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Permissions-Policy"] = (
-            "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+        started_ns = monotonic_ns()
+        correlation_id = _correlation_id(request)
+        request.state.operational_authentication = (
+            OperationalAuthenticationOutcome.NOT_ATTEMPTED
         )
-        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
-        response.headers["Cache-Control"] = "no-store"
-        if request.url.scheme == "https":
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        return response
+        response_status = status.HTTP_500_INTERNAL_SERVER_ERROR
+        raised: BaseException | None = None
+        try:
+            if require_https and request.url.scheme != "https":
+                request.state.operational_route_classification = "transport_rejected"
+                _mark_operational_error(request, "transport_policy")
+                response = JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={"detail": "HTTPS is required"},
+                )
+            else:
+                response = await call_next(request)
+            response_status = response.status_code
+            response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Permissions-Policy"] = (
+                "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+            )
+            response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+            response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["X-Correlation-ID"] = correlation_id
+            if request.url.scheme == "https":
+                response.headers["Strict-Transport-Security"] = (
+                    "max-age=31536000; includeSubDomains"
+                )
+            return response
+        except BaseException as exc:
+            raised = exc
+            _mark_operational_error(request, "unhandled_exception")
+            raise
+        finally:
+            actor_type, actor_id = _operational_actor(request)
+            authentication = _operational_authentication(request, response_status)
+            route, operation_type = _operational_route(request)
+            metadata = _operational_metadata(request, raised)
+            audit_recorder.record_operation(
+                OperationalAuditEvent(
+                    event_id=uuid4().hex,
+                    occurred_at=datetime.now(UTC),
+                    correlation_id=correlation_id,
+                    operation_type=operation_type,
+                    http_method=request.method.upper(),
+                    route=route,
+                    status_code=response_status,
+                    outcome=_operational_outcome(response_status),
+                    authentication=authentication,
+                    duration_ms=max(0, (monotonic_ns() - started_ns) // 1_000_000),
+                    request_id=_operational_request_id(request),
+                    actor_type=actor_type,
+                    actor_id=actor_id,
+                    metadata=metadata,
+                )
+            )
 
     def current_reviewer(
+        request: Request,
         credentials: Annotated[HTTPBasicCredentials | None, Depends(basic)],
     ) -> ReviewerPrincipal:
         principal = None
@@ -351,11 +414,15 @@ def create_app(
                 credentials.password,
             )
         if principal is None:
+            request.state.operational_authentication = OperationalAuthenticationOutcome.FAILED
+            _mark_operational_error(request, "authentication_failed")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Valid reviewer credentials are required",
                 headers={"WWW-Authenticate": 'Basic realm="Expense Agent review", charset="UTF-8"'},
             )
+        request.state.operational_authentication = OperationalAuthenticationOutcome.SUCCEEDED
+        request.state.operational_actor = ("reviewer", principal.reviewer_id)
         return principal
 
     def require_csrf_and_same_origin(
@@ -365,37 +432,54 @@ def create_app(
     ) -> ReviewerPrincipal:
         content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
         if content_type != "application/json":
+            _mark_operational_error(request, "unsupported_media_type")
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail="Content-Type must be application/json",
             )
         if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
+            _mark_operational_error(request, "cross_site_rejected")
             raise HTTPException(status_code=403, detail="Cross-site request blocked")
         origin = request.headers.get("origin")
         expected_origin = str(request.base_url).rstrip("/")
         if origin is None or origin.rstrip("/") != expected_origin:
+            _mark_operational_error(request, "same_origin_rejected")
             raise HTTPException(status_code=403, detail="Same-origin request required")
         if csrf_token is None or not csrf.verify(csrf_token, reviewer.reviewer_id):
+            _mark_operational_error(request, "csrf_rejected")
             raise HTTPException(status_code=403, detail="Invalid or expired CSRF token")
         return reviewer
 
+    @app.exception_handler(StarletteHTTPException)
+    async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+        _mark_operational_error(request, "http_error")
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=exc.headers,
+        )
+
     @app.exception_handler(ReviewNotFoundError)
-    async def review_not_found_handler(_request: Request, _exc: ReviewNotFoundError):
+    async def review_not_found_handler(request: Request, _exc: ReviewNotFoundError):
+        _mark_operational_error(request, "not_found")
         return JSONResponse(status_code=404, content={"detail": "Review case not found"})
 
     @app.exception_handler(ReviewConflictError)
-    async def review_conflict_handler(_request: Request, _exc: ReviewConflictError):
+    async def review_conflict_handler(request: Request, _exc: ReviewConflictError):
+        _mark_operational_error(request, "conflict")
         return JSONResponse(
             status_code=409,
             content={"detail": "Review case is no longer pending at that version"},
         )
 
     @app.exception_handler(DomainValidationError)
-    async def domain_validation_handler(_request: Request, exc: DomainValidationError):
+    async def domain_validation_handler(request: Request, exc: DomainValidationError):
+        _mark_operational_error(request, "domain_validation")
         return JSONResponse(status_code=422, content={"detail": str(exc)})
 
     @app.exception_handler(RequestValidationError)
-    async def request_validation_handler(_request: Request, exc: RequestValidationError):
+    async def request_validation_handler(request: Request, exc: RequestValidationError):
+        _mark_operational_error(request, "request_validation")
         # Never reflect raw OCR, credentials, or non-finite values from invalid input.
         errors = [
             {
@@ -408,11 +492,13 @@ def create_app(
         return JSONResponse(status_code=422, content={"detail": errors})
 
     @app.exception_handler(RequestNotFoundError)
-    async def request_not_found_handler(_request: Request, _exc: RequestNotFoundError):
+    async def request_not_found_handler(request: Request, _exc: RequestNotFoundError):
+        _mark_operational_error(request, "not_found")
         return JSONResponse(status_code=404, content={"detail": "Request not found"})
 
     @app.exception_handler(RequestConflictError)
-    async def request_conflict_handler(_request: Request, _exc: RequestConflictError):
+    async def request_conflict_handler(request: Request, _exc: RequestConflictError):
+        _mark_operational_error(request, "conflict")
         return JSONResponse(
             status_code=409,
             content={"detail": "Request ID already exists with a different payload"},
@@ -786,8 +872,104 @@ def _require_processing_service(
 
 
 def _correlation_id(request: Request) -> str:
+    existing = getattr(request.state, "operational_correlation_id", None)
+    if isinstance(existing, str):
+        return existing
     supplied = request.headers.get("X-Correlation-ID", "")
-    return supplied if CORRELATION_ID_PATTERN.fullmatch(supplied) else uuid4().hex
+    if CORRELATION_ID_PATTERN.fullmatch(supplied):
+        correlation_id = supplied
+        request.state.operational_correlation_source = "client"
+    else:
+        correlation_id = uuid4().hex
+        request.state.operational_correlation_source = "generated"
+    request.state.operational_correlation_id = correlation_id
+    return correlation_id
+
+
+def _mark_operational_error(request: Request, error_kind: str) -> None:
+    if not hasattr(request.state, "operational_error_kind"):
+        request.state.operational_error_kind = error_kind
+
+
+def _operational_actor(request: Request) -> tuple[str | None, str | None]:
+    actor = getattr(request.state, "operational_actor", None)
+    if (
+        isinstance(actor, tuple)
+        and len(actor) == 2
+        and all(isinstance(value, str) and value.strip() for value in actor)
+    ):
+        return actor
+    return None, None
+
+
+def _operational_authentication(
+    request: Request,
+    response_status: int,
+) -> OperationalAuthenticationOutcome:
+    if response_status == status.HTTP_401_UNAUTHORIZED:
+        return OperationalAuthenticationOutcome.FAILED
+    observed = getattr(request.state, "operational_authentication", None)
+    if isinstance(observed, OperationalAuthenticationOutcome):
+        return observed
+    return OperationalAuthenticationOutcome.NOT_ATTEMPTED
+
+
+def _operational_route(request: Request) -> tuple[str, str]:
+    classification = getattr(request.state, "operational_route_classification", None)
+    if classification == "transport_rejected":
+        return "transport_rejected", "transport_rejected"
+
+    route_object = request.scope.get("route")
+    route = getattr(route_object, "path", None)
+    if (
+        not isinstance(route, str)
+        or not route.strip()
+        or len(route) > 256
+        or any(character in route for character in ("?", "#", "\r", "\n"))
+    ):
+        return "unmatched", "unmatched_route"
+    if route == "/assets" or route.startswith("/assets/"):
+        return route, "static_asset_read"
+    return route, OPERATION_TYPES.get((request.method.upper(), route), "http_request")
+
+
+def _operational_request_id(request: Request) -> str | None:
+    request_id = request.path_params.get("request_id")
+    if (
+        isinstance(request_id, str)
+        and len(request_id) <= 128
+        and REQUEST_ID_PATTERN.fullmatch(request_id) is not None
+    ):
+        return request_id
+    return None
+
+
+def _operational_outcome(response_status: int) -> OperationalAuditOutcome:
+    if response_status >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+        return OperationalAuditOutcome.SERVER_ERROR
+    if response_status >= status.HTTP_400_BAD_REQUEST:
+        return OperationalAuditOutcome.CLIENT_ERROR
+    return OperationalAuditOutcome.SUCCEEDED
+
+
+def _operational_metadata(
+    request: Request,
+    raised: BaseException | None,
+) -> dict[str, str]:
+    metadata = {
+        "correlation_source": getattr(
+            request.state,
+            "operational_correlation_source",
+            "generated",
+        )
+    }
+    error_kind = getattr(request.state, "operational_error_kind", None)
+    if isinstance(error_kind, str):
+        metadata["error_kind"] = error_kind[:256]
+    if raised is not None:
+        exception_type = re.sub(r"[^A-Za-z0-9_.-]", "_", type(raised).__name__)
+        metadata["exception_type"] = (exception_type or "Exception")[:256]
+    return metadata
 
 
 def _receipt_facts(facts: ReceiptFacts | None) -> dict[str, Any] | None:

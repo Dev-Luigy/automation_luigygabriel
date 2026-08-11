@@ -10,6 +10,7 @@ from types import MappingProxyType
 from typing import Protocol
 from uuid import uuid4
 
+from expense_agent.application.operational_audit import OperationalAuditRecorder
 from expense_agent.domain._validation import require_aware_datetime, require_non_blank
 from expense_agent.domain.audit import AuditActor, AuditEvent
 from expense_agent.domain.decisions import AutomatedDecision, HumanDecision, ReviewOutcome
@@ -437,6 +438,14 @@ class ReviewService:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._decision_id_factory = decision_id_factory or (lambda: uuid4().hex)
         self._event_id_factory = event_id_factory or (lambda: uuid4().hex)
+
+    @property
+    def operational_audit_recorder(self) -> OperationalAuditRecorder | None:
+        """Expose the co-located recorder without leaking the whole repository."""
+
+        if isinstance(self._repository, OperationalAuditRecorder):
+            return self._repository
+        return None
 
     def list_pending(self) -> tuple[ReviewQueueItem, ...]:
         return self._repository.list_pending()

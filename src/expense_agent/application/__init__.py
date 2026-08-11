@@ -1,5 +1,11 @@
 """Application services and ports."""
 
+from expense_agent.application.operational_audit import (
+    OperationalAuditEvent,
+    OperationalAuditOutcome,
+    OperationalAuditRecorder,
+    OperationalAuthenticationOutcome,
+)
 from expense_agent.application.review import (
     PendingAgeBucket,
     ReviewBusinessEvent,
@@ -39,6 +45,10 @@ __all__ = [
     "ExtractionSnapshot",
     "InvocationStatus",
     "InvocationSummary",
+    "OperationalAuditEvent",
+    "OperationalAuditOutcome",
+    "OperationalAuditRecorder",
+    "OperationalAuthenticationOutcome",
     "PendingAgeBucket",
     "ProcessingOutcome",
     "ProcessingRunStatus",

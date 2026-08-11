@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from expense_agent.application.operational_audit import OperationalAuditEvent
 from expense_agent.application.review import ReviewCaseStatus, ReviewProblem, ReviewService
 from expense_agent.application.workflow import (
     ExtractionSnapshot,
@@ -139,8 +140,17 @@ class InMemoryProcessingService:
         return existing[1]
 
 
+class InMemoryOperationalAuditRecorder:
+    def __init__(self) -> None:
+        self.events: list[OperationalAuditEvent] = []
+
+    def record_operation(self, event: OperationalAuditEvent) -> None:
+        self.events.append(event)
+
+
 def _client() -> tuple[TestClient, InMemoryProcessingService]:
     processing_service = InMemoryProcessingService()
+    audit_recorder = InMemoryOperationalAuditRecorder()
     app = create_app(
         review_service=ReviewService(object()),  # Review routes are outside this focused test.
         processing_service=processing_service,  # type: ignore[arg-type]
@@ -148,6 +158,7 @@ def _client() -> tuple[TestClient, InMemoryProcessingService]:
         csrf=CsrfProtector("test-csrf-secret-that-is-long-enough"),
         require_https=True,
         allowed_hosts=("testserver",),
+        operational_audit_recorder=audit_recorder,
     )
     return TestClient(app, base_url=ORIGIN), processing_service
 
@@ -437,6 +448,7 @@ def test_request_routes_fail_closed_when_processing_is_not_composed() -> None:
         csrf=CsrfProtector("test-csrf-secret-that-is-long-enough"),
         require_https=True,
         allowed_hosts=("testserver",),
+        operational_audit_recorder=InMemoryOperationalAuditRecorder(),
     )
     client = TestClient(app, base_url=ORIGIN)
 
