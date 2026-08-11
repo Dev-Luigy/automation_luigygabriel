@@ -28,15 +28,15 @@ Status meanings:
 | D-012 | Use OCR plus two LLMs for every request. | open; not justified yet |
 | D-013 | Support an optional, risk-based secondary verifier. | proposed |
 | D-014 | Keep current and planned architecture visibly separate in documentation. | accepted |
-| D-015 | Persist the human decision, status transition, and audit event atomically. | accepted |
+| D-015 | Persist decision-command binding, human decision, status transition, and audit event atomically. | accepted |
 | D-016 | Maintain a living question, assumption, and decision history. | accepted |
-| D-017 | Serve one same-origin HTML/CSS/vanilla-JavaScript review screen. | accepted |
+| D-017 | Serve same-origin HTML/CSS/vanilla-JavaScript submitter and reviewer screens. | accepted |
 | D-018 | Avoid a separate React/Next.js runtime until infrastructure evidence justifies it. | accepted |
 | D-019 | Use HTTPS in production with same-origin APIs, CSRF defense, and secure browser headers. | accepted |
-| D-020 | Use HTTP Basic only as a replaceable assessment authentication adapter. | accepted with production replacement |
-| D-021 | Combine HTTP ETags with a serialized database version/state check. | accepted |
+| D-020 | Use role-bearing HTTP Basic principals only as a replaceable assessment authentication adapter. | accepted with production replacement |
+| D-021 | Combine HTTP ETags, a durable command key, and a serialized database version/state check. | accepted |
 | D-022 | Append review lifecycle events and enforce database immutability. | accepted |
-| D-023 | Store and display attachment locations only in the assessment. | implemented limitation; content access remains open |
+| D-023 | Store and display attachment locations only in the assessment. | superseded by D-051 |
 | D-024 | Retain the raw model response for audit but omit it from the reviewer API. | accepted |
 | D-025 | Keep n8n as a rejected orchestration alternative, not the assessment runtime. | accepted |
 | D-026 | Use a hybrid AWS serverless production target. | accepted target; not implemented or deployed |
@@ -45,23 +45,37 @@ Status meanings:
 | D-029 | Preserve originals and approve retention before lifecycle deletion. | proposed; awaiting legal and governance confirmation |
 | D-030 | Derive serverless reviewer identity automatically through corporate OIDC/SSO. | superseded by standalone identity direction |
 | D-031 | Separate the submitter status experience from the internal evidence-review workspace. | superseded; incorrectly assumed an existing client channel |
-| D-032 | Build standalone submitter, reviewer, and audit/administration surfaces. | accepted; intake/result API and reviewer UI implemented, submitter/audit UIs pending |
+| D-032 | Build standalone submitter, reviewer, and audit/administration surfaces. | accepted; submitter/reviewer implemented, audit/admin UI pending |
 | D-033 | Use server-side indexed filtering, sorting, search, and cursor pagination with multiple review views. | accepted; implemented for reviewer slice |
-| D-034 | Localize the product interface in Portuguese, English, and Spanish. | accepted; implemented for reviewer slice |
+| D-034 | Localize the product interface in Portuguese, English, and Spanish. | accepted; implemented for submitter and reviewer surfaces |
 | D-035 | Use an application-owned managed identity service rather than an existing corporate IdP. | accepted target; not implemented |
 | D-036 | Make discovery database-scoped across the authorized dataset; retain keyset pagination and add exact all-status/history/audit lookup. | accepted; pending search and exact all-status lookup implemented, history/audit search planned |
-| D-037 | On case selection, separate reviewer evidence and business timeline from privileged technical trace, with authorized on-demand access to the immutable original. | accepted; 1:N trace and business timeline implemented, privileged UI and content access partial/planned |
+| D-037 | On case selection, separate reviewer evidence and business timeline from privileged technical trace, with authorized on-demand access to the immutable original. | accepted; managed original and business timeline implemented, privileged audit UI pending |
 | D-038 | Expose reviewer business history through a dedicated sanitized, cursor-paginated endpoint. | accepted and implemented for current business event types |
 | D-039 | Use a same-origin CloudFront edge and Cognito-backed serverless BFF session. | accepted production target; not implemented |
 | D-040 | Keep the Aurora business ledger authoritative and export its transactional outbox to immutable storage. | accepted production target; not implemented |
 | D-041 | Evaluate Kubernetes/EKS as a container runtime without replacing the accepted serverless target. | superseded by D-042; evaluated and not selected |
 | D-042 | Retain the hybrid AWS serverless target and close Kubernetes as a current deployment option. | accepted |
-| D-043 | Reject receipts older than 90 days before applying human-review route precedence. | implemented assessment interpretation; stakeholder validation open |
+| D-043 | Reject receipts older than 90 days before applying human-review route precedence. | partially superseded by D-049; age boundary retained |
 | D-044 | Compose an offline deterministic extractor by default and keep live HTTPS extraction optional/configurable. | accepted and implemented |
-| D-045 | Persist the v1→v3 workflow through short transactions and immutable one-to-many invocation attempts. | accepted and implemented |
+| D-045 | Persist the v1→v3 workflow through short transactions, leases, and immutable one-to-many invocation attempts. | accepted and implemented |
 | D-046 | Provide strict authenticated intake and safe all-status lookup with request-ID plus fingerprint idempotency. | accepted and implemented |
-| D-047 | Describe current audit honestly as processing/decision traceability and block production until all-operation coverage exists. | accepted release gate |
+| D-047 | Record every HTTP attempt locally while blocking production until outbox/export and governance exist. | accepted; partially superseded by D-050 |
 | D-048 | Package a one-command AWS assessment sandbox without redefining the production target. | accepted and implemented artifact; not provisioned |
+| D-049 | Make high-value review non-bypassable and constrain mandatory-reject cases. | accepted and implemented |
+| D-050 | Append one privacy-bounded operational audit event for every HTTP attempt. | accepted and implemented locally |
+| D-051 | Use managed immutable filesystem evidence for the assessment. | accepted and implemented locally |
+| D-052 | Enforce explicit assessment roles, owner reads, and self-review prohibition. | accepted and implemented |
+| D-053 | Recover expired processing leases on identical retry and fence stale workers. | accepted and implemented |
+| D-054 | Block automatic approval when receipt evidence is missing. | accepted and implemented |
+| D-055 | Provide a standalone trilingual submit-and-exact-track portal. | accepted and implemented |
+| D-056 | Make human decision commands durably idempotent. | accepted and implemented |
+| D-057 | Revalidate original evidence at human-decision time and fail closed for approval. | accepted and implemented |
+| D-058 | Enforce four-eyes against the authenticated submission actor inside the application service. | accepted and implemented |
+| D-059 | Bind operations and decisions to an immutable build ID and effective-configuration hash. | accepted and implemented |
+| D-060 | Use canonical category codes, 128-bit request IDs, and bounded review paths. | accepted and implemented |
+| D-061 | Seed the AWS sandbox with a distinct non-interactive actor. | accepted and implemented |
+| D-062 | Detect possible cross-request receipt reuse without automatic rejection. | proposed production control; not implemented |
 
 ## D-001 - Deterministic financial authority
 
@@ -209,9 +223,9 @@ decision without an audit trail.
 rechecks both workflow statuses and the expected version, inserts the decision,
 conditionally updates the reimbursement and review case, appends the audit
 event, and commits. Any failure rolls back the unit. Tests cover a late audit
-failure, repeated decisions, and two concurrent writers that read version 1:
-exactly one commits, the other conflicts, one decision remains, and the case is
-at version 2.
+failure, repeated decisions, and two concurrent writers against the same
+pending version: exactly one commits, the other conflicts, one decision
+remains, and the case advances exactly once.
 
 ## D-016 - Living decision history
 
@@ -221,28 +235,29 @@ part of each meaningful design or implementation change.
 **Rationale:** The final report must explain not only the resulting code, but the
 questions, alternatives, compromises, and evidence that led to it.
 
-## D-017 - Single same-origin review screen
+## D-017 - Same-origin framework-free product screens
 
-**Decision:** The Python service serves one static HTML document, one stylesheet,
-and one vanilla-JavaScript module. JavaScript uses same-origin `fetch` calls to
-load the queue, open a case, and submit approve/reject actions.
+**Decision:** The Python service serves independent submitter and reviewer HTML,
+CSS, and vanilla-JavaScript assets. JavaScript uses same-origin `fetch` for file
+upload, intake/tracking, queue/detail/timeline, and decision actions.
 
 **Rationale:** This provides an accessible non-technical interface without a
 Node build pipeline, a second deployment artifact, hydration, or a separate
-frontend server for one simple workflow.
+frontend server for two bounded workflows.
 
 **Security consequence:** Reimbursement and OCR values are assigned with DOM
 `textContent`, never inserted as executable HTML.
 
 ## D-018 - No React or Next.js without deployment evidence
 
-**Decision:** Do not add a React/Next.js runtime for the current one-screen UI.
+**Decision:** Do not add a React/Next.js runtime for the current two bounded
+same-origin workflows.
 
 **Alternatives considered:** Next.js server-side rendering, a separately hosted
 single-page application, and static HTML/JavaScript served by FastAPI.
 
-**Rationale:** The standalone reviewer console is one bounded operational
-workflow. Static same-origin assets have a small deployment and dependency
+**Rationale:** The submitter and reviewer screens are bounded operational
+workflows. Static same-origin assets have a small deployment and dependency
 footprint, avoid a second runtime, and preserve the option to replace the
 presentation layer later if product complexity grows.
 
@@ -268,19 +283,21 @@ provides a small demonstrable authentication boundary. The application-facing
 identity port allows production OIDC/SSO to replace it without changing the
 review workflow.
 
-## D-021 - Layered optimistic concurrency
+## D-021 - Version concurrency plus command idempotency
 
 **Decision:** A case detail response carries an ETag derived from the request
-identity and database version. The decision endpoint requires `If-Match`, then
-the repository rechecks pending state and version inside `BEGIN IMMEDIATE`.
+identity and database version. The decision endpoint requires `If-Match` and a
+durable command key, then the repository rechecks key binding, pending state,
+and version inside `BEGIN IMMEDIATE`.
 
 **Rationale:** The ETag gives the browser an explicit stale-view protocol, while
 the serialized transaction closes the race between the HTTP precheck and the
 write. The UI can distinguish a stale precondition (`412`) from a transaction-
 time conflict (`409`).
 
-**Consequence:** Repeated or competing submissions cannot create a second human
-decision. Production database replacement must preserve equivalent semantics.
+**Consequence:** An identical ambiguous retry returns the original decision;
+divergent key reuse or a competing command conflicts. Neither can create a
+second human decision. Production storage must preserve equivalent semantics.
 
 ## D-022 - Review lifecycle audit and database immutability
 
@@ -295,25 +312,20 @@ timeout, and `synchronous=FULL`.
 well as how it left. Application-level immutability alone does not protect
 against accidental direct SQL mutation.
 
-**Consequence:** This is complete for the implemented review lifecycle, not for
-the future authoritative intake/extraction/policy pipeline. Production still
-needs broader event coverage, access governance, retention, backup, and
+**Consequence:** This is complete for the local SQLite review transaction and
+business timeline. Intake, extraction, policy, processing recovery, and every-
+HTTP operational events are also implemented, but production still needs an
+outbox, approved immutable export, access governance, retention, backup, and
 recovery controls.
 
 ## D-023 - Attachment reference boundary
 
-**Current implementation boundary:** The assessment persists and displays only
-`AttachmentReference.location`. It does not implement file upload, preview,
-download, signed URLs, or attachment-content authorization.
+**Status:** Superseded by D-051. Retained as the historical boundary before
+managed evidence was implemented.
 
-**Rationale:** A safe content path requires application-owned object storage,
-malware scanning, retention rules, and attachment authorization that are not
-part of the implemented slice. Displaying the reference makes the missing
-boundary visible without inventing insecure file access.
-
-**Status:** This is a visible limitation, not a claim that attachment references
-alone satisfy the final reviewer workflow. The standalone production storage
-and authorization contract remains an open product decision.
+The current assessment uploads and serves integrity-checked local bytes. The
+production concerns originally identified here—versioned object storage,
+malware quarantine, retention, OCR binding, and richer authorization—remain.
 
 ## D-024 - Protected model response
 
@@ -518,7 +530,8 @@ and whether auditors need a dedicated read-only interface in the first release.
 
 ## D-032 - Standalone product surfaces
 
-**Status:** Accepted by explicit user direction; implementation is partial.
+**Status:** Accepted by explicit user direction; submitter and reviewer
+surfaces are implemented, while privileged audit/administration remains open.
 
 **Decision:** Expense Agent owns three independently authorized experiences:
 
@@ -534,10 +547,11 @@ Do not assume or require an existing RecargaPay frontend, IdP, CRM, database,
 notification mechanism, or workflow. Integration adapters may be added later,
 but the product must remain usable and auditable without them.
 
-**Current boundary:** Authenticated intake and exact all-status result APIs now
-exist alongside the reviewer queue/detail/timeline/decision screen. No
-submitter upload/tracking screen or privileged audit/administration screen
-exists. Attachment bytes are not accepted or served.
+**Current boundary:** `/submit` now owns managed upload, claim entry, safe
+submission, and exact-ID tracking. `/reviews` owns queue discovery,
+detail/timeline/original evidence, and idempotent human decisions. Both are
+trilingual and role-aware. A privileged cross-case audit/administration screen
+is not implemented.
 
 ## D-033 - Scalable review discovery and views
 
@@ -577,7 +591,7 @@ million-row latency SLO.
 
 ## D-034 - Trilingual presentation
 
-**Status:** Accepted and implemented for the reviewer slice.
+**Status:** Accepted and implemented for both submitter and reviewer surfaces.
 
 **Decision:** Product navigation, controls, statuses, validation, empty/error
 states, date/number formatting, and known problem/rule labels support `pt-BR`,
@@ -664,27 +678,27 @@ justifies the additional consistency and operational cost.
 
 ## D-037 - Evidence detail, trace separation, and original-file access
 
-**Status:** Accepted direction; partially implemented. Structured reviewer
-evidence, a sanitized business timeline, and immutable 1:N processing attempts
-exist, but the privileged technical-trace surface, attachment-content
-authorization, and file-access auditing do not.
+**Status:** Accepted direction. Reviewer evidence, sanitized business timeline,
+immutable 1:N attempts, case-bound managed-file delivery, integrity checks, and
+file-access auditing are implemented. A privileged cross-case technical/audit
+surface remains open.
 
 **Question:** When a reviewer selects a card, can that person see the evidence,
 traceability, and original receipt required to make and later explain a
 financial decision?
 
 **Current implementation:** Selecting a request loads claim data, raw OCR,
-normalized facts, detected problems, policy version, rule evaluations, and
-attachment locations. The detail API also carries safe model-invocation
-metadata and automated-decision data, although the current screen does not
-render that technical trace. The screen independently loads a sanitized,
-cursor-paginated timeline over the append-only processing and review business
+normalized facts, detected problems, policy version, rule evaluations, managed
+attachment metadata, and a case-bound original-file action. The detail API also
+carries safe model-invocation metadata and automated-decision data, while raw
+provider output remains protected. The screen independently loads a sanitized,
+cursor-paginated timeline over append-only processing and review business
 events. It is a case-scoped reviewer projection, not the privileged cross-case
-audit search. The attachment model contains only a `location` string; it does
-not serve the original bytes, preview them, verify a content checksum/version,
-or audit a read. `processing_invocation_attempts` now supports immutable
-attempts by processing run, stage, and attempt. The current synchronous service
-executes one primary attempt and has no retry scheduler or secondary verifier.
+audit search. The filesystem evidence adapter uses opaque IDs, immutable
+envelopes, media/size/SHA-256 verification on every read, and operationally
+audited delivery. `processing_invocation_attempts` supports immutable attempts
+by processing run, stage, and attempt; expired runs recover on an identical
+retry, but there is no background scheduler or secondary verifier.
 
 **Decision:** Case selection must provide three deliberately separated views:
 
@@ -708,15 +722,15 @@ result, and protected raw output/error. The legacy one-row trace remains only a
 final compatibility projection. Retry/reprocessing orchestration is still
 future work, but earlier attempts no longer need to be overwritten.
 
-**Attachment integrity and delivery contract:** Replace exposed storage
-locations with stable attachment IDs and protected relational metadata linking
-the request to the exact object version, SHA-256 checksum, detected media type,
+**Production attachment contract:** Replace assessment filesystem envelopes
+with stable attachment IDs and protected relational metadata linking the
+request to the exact S3 object version, SHA-256 checksum, detected media type,
 byte size, scan result, and retention/legal-hold classification. Serve only the
 same clean, pinned version used by the extraction trace; preserve derived safe
 previews separately from the byte-for-byte original. The content path must use
-safe `Content-Disposition`, single-range HTTP semantics where needed, private
-no-store responses, and fail closed for pending, failed, unsupported, or
-malicious scans.
+safe `Content-Disposition`, range semantics where needed, private no-store
+responses, and fail closed for pending, failed, unsupported, or malicious
+scans.
 
 **Authorization and audit consequence:** Identity remains server-derived. Each
 detail, timeline, preview, download, and technical-trace request must enforce
@@ -769,10 +783,10 @@ whitelisting, and the actual decision-to-timeline path.
 **Boundary:** The business projection now covers reimbursement received,
 processing started, automated decision, review enqueue, and human decision.
 Model-invocation start/completion are deliberately technical events; intake
-replay/conflict are security events. All assessment reviewers still share one
-global scope. Cross-case event search/export, object authorization/access
-auditing, retry/reprocessing recovery, and cursor-key rotation remain production
-work.
+replay/conflict are security events. Reviewer/auditor/admin read capabilities
+and evidence-access audit are now explicit. Cross-case event search/export,
+team/tenant/case-assignment predicates, privileged technical UI, and cursor-key
+rotation remain production work.
 
 ## D-039 - Same-origin edge and Cognito-backed BFF session
 
@@ -915,8 +929,8 @@ evidence.
 Helm/Kustomize manifests, EKS infrastructure as code, ingress, probes,
 PodDisruptionBudget, autoscaling policy, pod identity, secrets integration, or
 production PostgreSQL adapter. SQLite, HTTP Basic, and local attachment
-references remain assessment adapters and must never become pod-local
-production state.
+envelopes remain assessment adapters and must never become pod-local production
+state.
 
 ## D-042 - Reaffirm the hybrid AWS serverless target
 
@@ -938,33 +952,31 @@ fixed cost and operational ownership. The accepted serverless topology better
 matches the still-unknown and potentially bursty workload while preserving the
 same domain, ledger, evidence, and traceability boundaries.
 
-**Scope consequence:** This confirmation does not claim that AWS infrastructure
-is implemented or required to complete the local code-assessment deliverable.
-Do not add Kubernetes manifests or EKS provisioning. Production deployment
-still requires the separately documented AWS, security, data-governance, load,
-and recovery inputs.
+**Scope consequence:** This confirmation does not claim that live AWS
+infrastructure is provisioned. The repository contains a bounded SAM assessment
+sandbox, not the accepted production target. Do not add Kubernetes manifests
+or EKS provisioning. Production deployment still requires the separately
+documented AWS, security, data-governance, load, and recovery inputs.
 
 ## D-043 - Old-receipt precedence and time anchor
 
-**Status:** Implemented assessment interpretation; stakeholder validation open.
+**Status:** Age boundary/time anchor retained; route precedence superseded by D-049.
 
 **Question:** What happens when a receipt is both older than 90 days and above
 the mandatory human-review amount, and which date anchors age?
 
-**Decision:** Evaluate all rules, but give any `reject` outcome precedence over
-`review`. A receipt more than 90 calendar days old is rejected even when its
-amount also requires human review; both evaluations and reasons remain stored.
-Exactly 90 days is valid. Convert the supplied `submission.submitted_at` to
-`America/Sao_Paulo` and compare its calendar date with the receipt date.
-`decided_at` is metadata and cannot change the route.
+**Current decision:** Evaluate all rules. A receipt more than 90 calendar days
+old rejects automatically when the claim is at or below BRL 2,000. Above BRL
+2,000, D-049 makes human review non-bypassable and the reject evaluation
+prevents approval. Exactly 90 days is valid. Convert supplied
+`submission.submitted_at` to `America/Sao_Paulo`; `decided_at` cannot change the
+route.
 
-**Rationale:** The assignment says old receipts must be rejected and high-value
-requests must receive review but does not define the collision. Reject
-precedence avoids approving an explicitly ineligible claim while retaining the
-complete high-value evidence. Anchoring to immutable submission input makes
-processing delays deterministic. This is not confirmation from a policy owner;
-the literal high-value threshold and collision must be validated before
-production.
+**Rationale:** The assignment says both that old receipts reject and that a
+high-value request must always be reviewed. The current constraint satisfies
+both literal requirements while retaining complete evidence. Anchoring to the
+immutable assessment input makes processing delays deterministic, but policy
+ownership still must validate production semantics.
 
 **Production blocker:** The assessment follows the assignment object, whose
 `submitted_at` is supplied by the caller. A real monetary deployment must not
@@ -993,21 +1005,23 @@ that a provider is replaceable while the policy remains deterministic. Two
 models on every request are not justified until labeled quality/cost/latency
 evidence exists.
 
-**Consequence:** Any extraction warning/failure routes to review. The optional
-HTTP adapter is tested but is not selected through current environment
-configuration. A secondary verifier remains a proposed risk-based experiment.
+**Consequence:** Any extraction warning/failure routes to review. The
+composition root selects the HTTP adapter only when
+`EXPENSE_AGENT_EXTRACTOR_MODE=http_json` and its strict settings validate;
+deterministic remains the offline default. A secondary verifier remains a
+proposed risk-based experiment.
 
 **Production blocker:** Assessment intake accepts caller-supplied
-`raw_ocr_text` and attachment reference strings. Without application-owned
-receipt bytes, checksum/version binding, malware/media validation, and trusted
-OCR over those exact bytes, a caller can self-attest text that may auto-approve.
-The current extractor path therefore cannot authorize real monetary decisions.
+`raw_ocr_text`. Managed bytes, checksum and media validation now exist, but OCR
+is not derived from or cryptographically bound to that object and there is no
+malware state or S3 version. The current extractor path therefore cannot
+authorize real monetary decisions.
 
 ## D-045 - Durable processing transactions and 1:N attempts
 
 **Status:** Accepted and implemented.
 
-**Decision:** Persist workflow in short transaction boundaries:
+**Decision:** Persist the no-recovery workflow in short transaction boundaries:
 
 1. submission, attachments, and `reimbursement_received` at received v1;
 2. running processing run, state transition, and start event at processing v2;
@@ -1016,6 +1030,9 @@ The current extractor path therefore cannot authorize real monetary decisions.
 5. extraction, automated decision/reasons/rules, terminal run, reimbursement
    route, business event, and optional review enqueue atomically at v3;
 6. human decision, review/status transition, and audit event atomically at v4.
+
+Every recovered processing lease advances the aggregate once before a new run,
+so recovered paths use later versions rather than inferring v3/v4 from status.
 
 Do not hold a SQL transaction across extractor I/O. Store attempts one-to-many
 by invocation ID, processing run, stage, and attempt; terminal attempts and
@@ -1031,11 +1048,11 @@ reprocessing to append rather than overwrite.
 direct mutation rejection, and a late audit-event collision; the last leaves
 the request at processing v2 with no leaked extraction/decision/review rows.
 
-**Boundary and production blocker:** The synchronous service currently runs one
-primary attempt and does not recover abandoned running attempts. A crash can
-leave a request/run/attempt at v2/running indefinitely. Production needs
-leases/watchdogs, idempotent resume, retry/DLQ/replay controls, and audited
-operational recovery before monetary activation.
+**Current recovery boundary:** The synchronous service runs one primary attempt
+per run and uses a five-minute lease. An identical retry after expiry appends
+abandonment/resume evidence and fences the stale worker. Production still needs
+heartbeat/watchdog supervision, retry budgets/backoff, SQS/DLQ replay, and
+operator controls.
 
 ## D-046 - Authenticated intake, safe result, and fingerprint idempotency
 
@@ -1043,8 +1060,9 @@ operational recovery before monetary activation.
 
 **Decision:** Add strict `POST /api/requests` and authenticated exact-ID
 `GET /api/requests/{request_id}`. The write requires JSON, same origin, CSRF,
-and a server-derived `authenticated_caller` audit actor distinct from claimed
-`submitted_by`. Reject binary64 JSON floats at/above `2**46`, where cents can
+and a server-derived business actor with literal type `submitter`, distinct
+from claimed `submitted_by`; the operational HTTP actor type is
+`authenticated_principal`. Reject binary64 JSON floats at/above `2**46`, where cents can
 collapse, while allowing exact decimal strings. Normalize the typed submission
 and compute a canonical SHA-256 fingerprint. A new ID returns `201`; the same ID
 and hash returns its stored result with `200` and no second extraction; the same
@@ -1060,12 +1078,10 @@ provides explicit idempotency while keeping normal responses least-privilege.
 The exact-ID path prevents users from searching page by page through a large
 pending queue.
 
-**Production blocker:** HTTP Basic proves authentication and server-derived
-identity, but every configured assessment account has global request, evidence,
-timeline, and decision scope. There is no owner, role, team, tenant, case,
-purpose, value-authority, or separation-of-duties enforcement. Managed identity
-alone is insufficient; production must implement those authorization predicates
-and their audit before real reimbursement data or money is exposed.
+**Authorization boundary:** Assessment roles, owner result reads, and
+self-review denial are implemented. Production still lacks managed account
+lifecycle and durable team, tenant, case-assignment, purpose, and value-authority
+predicates. Managed identity alone remains insufficient.
 
 **Evidence:** Real FastAPI-to-SQLite tests cover create/replay/conflict, strict
 validation, actor derivation, safe serialization, all-status lookup, and
@@ -1078,16 +1094,15 @@ security-event persistence.
 **Question:** Does the new run/attempt/event model satisfy the requirement for
 full traceability of all operations?
 
-**Decision:** No. Describe it precisely as processing and financial-decision
-traceability. It records intake acceptance, processing start, extractor
-attempts, automated routing, queue enqueue, idempotency replay/conflict, and
-human decision. Do not claim that every service operation is audited.
+**Decision:** The original answer was no. D-050 now appends one sanitized row
+for every HTTP request attempt in addition to processing and financial events.
+This includes authentication, authorization, reads, searches, validation/error,
+static assets, upload, and download without recording bodies or sensitive query
+values.
 
-**Missing coverage:** Authentication success/failure, ordinary request/evidence
-reads, searches and exported query context, validation failures, every
-orchestration exception, authorization decisions, attachment preview/download,
-and administrative actions do not yet have complete privacy-aware audit paths.
-There is also no immutable outbox/export outside SQLite.
+**Remaining coverage:** There is no cross-case audit query/export UI, exact
+search-expression digest policy, transactional outbox, approved immutable
+archive, or administrator-resistant WORM guarantee outside SQLite.
 
 **Consequence:** Production financial activation is blocked until accountable
 security/compliance owners define the required event taxonomy, sensitive-field
@@ -1107,20 +1122,23 @@ architecture or creating resources in an unknown account?
 
 **Decision:** Provide a SAM deployment sandbox that packages the existing
 FastAPI service as a Python 3.12 x86_64 Lambda through Mangum, exposes it through
-an HTTP API, and mounts encrypted EFS for the assessment SQLite file. Create two
+an HTTP API, and mounts encrypted EFS for SQLite plus managed evidence. Create two
 private subnets and security groups, enable EFS backups and retention, cap
 Lambda reserved concurrency at four, retain 14-day sanitized API/Lambda logs,
 enable X-Ray, and add error/throttle alarms. Keep the deterministic extractor,
-HTTP Basic/PBKDF2, same-origin CSRF controls, and direct `execute-api` HTTPS URL.
-Do not add NAT or a live model provider. Seed only the three synthetic assignment
-examples after deployment.
+one interactive config-backed admin, a distinct non-interactive seed actor,
+same-origin CSRF controls, and direct `execute-api` HTTPS URL. Do not add NAT or
+a live model provider. Seed only the three synthetic assignment examples after
+deployment.
 
 `deploy/aws/deploy.sh` checks local prerequisites and AWS identity, asks for an
 explicit billable-resource confirmation, reads the review password without
-echo, passes only its PBKDF2 hash and a generated CSRF secret through NoEcho
-parameters, prepares an exact-pinned minimal dependency context, validates,
-builds in the official Lambda-compatible container, deploys, and seeds through
-the public HTTPS API.
+echo, passes only PBKDF2 hashes and a generated CSRF secret through NoEcho
+parameters, derives a build ID from a clean Git commit and the `uv.lock` hash
+(or accepts an explicitly audited CI identity), prepares an exact-pinned
+minimal dependency context, validates, builds in the official
+Lambda-compatible container, deploys, uploads synthetic in-memory PDF evidence,
+and seeds through the public HTTPS API with the distinct actor.
 
 **Alternatives considered:** An EC2/EBS host would fit SQLite locking better but
 would abandon the requested serverless path and add host operations. App Runner
@@ -1142,15 +1160,217 @@ Stack deletion retains EFS by design, so it can continue to incur charges and
 requires separately authorized removal. No real receipt or monetary data is
 allowed, and D-026/D-039/D-040/D-042 remain the production target.
 
-**Evidence:** 151 tests with warnings as errors, Ruff, JavaScript syntax,
-ShellCheck, SAM lint, a containerized x86_64 SAM build, and import/schema
-initialization in the matching Lambda Python 3.12 runtime pass locally. No live
+**Evidence:** Automated tests, Ruff, JavaScript syntax, ShellCheck, SAM lint, a
+containerized x86_64 SAM build, and import/schema initialization in the matching
+Lambda Python 3.12 runtime passed at this milestone. No live
 stack, EFS recovery, load, security, or account-level test has been performed,
 and no AWS resource was created.
 
 **Affected code and documentation:** `lambda_handler.py`, configurable SQLite
 journal mode, `deploy/aws/`, AWS deployment tests, the AWS runbook, architecture,
 database, feature, diagram, final-report, journal, assumption, and time records.
+
+## D-049 - Non-bypassable high-value review
+
+**Status:** Accepted and implemented in `baseline-v3`, rule set `1.2.0`.
+
+**Decision:** A claim above BRL 2,000 always reaches human review. All
+deterministic rules still run. If one produces `reject`, the domain prevents a
+human approval and requires the reviewer to confirm rejection with a rationale.
+
+**Rationale:** This satisfies both literal assignment statements without
+silently skipping the required human act or allowing judgment to override a
+mandatory age rule. Exactly BRL 2,000 remains in the intermediate review band;
+exactly 90 days remains valid.
+
+## D-050 - Privacy-bounded audit for every HTTP attempt
+
+**Status:** Accepted and implemented locally.
+
+**Decision:** Middleware appends one `operational_audit_events` row for every
+HTTP attempt, including failed authentication, authorization denial,
+validation/error responses, reads, searches, static assets, uploads, downloads,
+404s, and 500s. The event includes route classification, actor when known,
+request/correlation identity, auth/outcome/status/duration, and bounded safe
+metadata; it excludes bodies, OCR, query values, credentials, and tokens.
+
+**Boundary:** This closes local HTTP-attempt coverage, not production
+traceability. The row is written in a separate SQLite transaction and there is
+no query UI, transactional outbox, approved retention policy, or off-host WORM
+archive.
+
+## D-051 - Managed immutable assessment evidence
+
+**Status:** Accepted and implemented locally.
+
+**Decision:** The public API streams allowlisted JPEG/PNG/PDF bytes into a
+private immutable filesystem envelope and returns an opaque `evidence:att_*`
+reference. The envelope carries safe filename, media type, size, and SHA-256;
+every read revalidates the structure, checksum, and signature. Reviewer,
+auditor, or admin access first proves case membership and is operationally
+audited. New public intake rejects arbitrary legacy references.
+
+**Boundary:** Seeded/migrated legacy references remain readable as text but
+cannot support approval; they may be rejected with `unverifiable` recorded. The
+adapter has no malware quarantine, uploader ownership, OCR-to-object binding,
+S3 version, lifecycle/legal hold, or production authorization.
+
+## D-052 - Explicit assessment authorization
+
+**Status:** Accepted and implemented.
+
+**Decision:** Credentials carry closed roles: `submitter`, `reviewer`,
+`auditor`, or `admin`. Non-admin submitters can submit only their authenticated
+email. Exact result reads are owner-only unless the principal can review or
+audit. Only reviewer/admin can decide, auditor is read-only, and a submitter
+cannot decide their own request. The authenticated actor from the immutable
+intake event, not only claimed email, drives this check inside `ReviewService`;
+the HTTP adapter also denies early. The browser hides actions it cannot perform,
+while the server remains authoritative.
+
+**Boundary:** Configuration-backed accounts do not provide MFA, recovery,
+revocation, durable role administration, team/tenant/assignment/value/purpose
+policy, or complete production separation of duties.
+
+## D-053 - Retry-triggered processing lease recovery
+
+**Status:** Accepted and implemented.
+
+**Decision:** A run receives a five-minute lease. An identical request after
+expiry atomically marks the old run and unfinished attempt abandoned, appends
+recovery evidence, and starts the next run. One caller owns recovery; the stale
+worker cannot finalize. The response reports `recovered` separately from a
+terminal `replayed` result.
+
+**Boundary:** No heartbeat, background watchdog, retry budget/backoff, operator
+replay UI, SQS, or DLQ exists. A provider call longer than the lease may execute
+twice, although state/version checks prevent a second financial decision.
+
+## D-054 - Receipt evidence gates automatic approval
+
+**Status:** Accepted and implemented in `baseline-v3`.
+
+**Decision:** No attachment produces `MISSING_RECEIPT_EVIDENCE` and human
+review; it can never auto-approve. The HTTP adapter additionally verifies every
+new managed reference through an integrity read before processing.
+
+## D-055 - Standalone trilingual submitter portal
+
+**Status:** Accepted and implemented.
+
+**Decision:** `/submit` provides an English, Portuguese, and Spanish
+framework-free screen for receipt upload, immutable authenticated submitter
+identity, exact decimal claim data, supplied assessment OCR text, safe
+submission, and exact-ID tracking across statuses. It stores no sensitive data
+in browser storage and recovers ambiguous network outcomes with the same
+request ID.
+
+**Trade-off:** The assessment remains synchronous and pastes OCR text. At scale,
+the production target uses direct S3 upload and asynchronous SQS workers.
+
+## D-056 - Idempotent human decision commands
+
+**Status:** Accepted and implemented.
+
+**Decision:** Decision POSTs require both the original `If-Match` and an
+8–128-character visible-ASCII `Idempotency-Key`. SQLite stores only the key's
+SHA-256 plus a fingerprint of request, outcome, normalized rationale,
+authenticated reviewer, and expected version. Binding, decision, the next
+aggregate state/version, and business audit event commit atomically. An exact
+retry returns the original
+result with `200`/`replayed: true`; divergent key reuse returns `409`.
+
+**Rationale:** Aggregate versioning prevents competing decisions, while command
+idempotency resolves the different problem of an ambiguous transport retry
+after a successful commit.
+
+## D-057 - Decision-time original-evidence integrity
+
+**Status:** Accepted and implemented.
+
+**Decision:** Immediately before a new human decision, re-read every managed
+original and verify its immutable envelope, size, SHA-256, and media signature.
+`ReviewService` accepts approval only with the explicit `verified` state.
+Missing, corrupt, invalid, or legacy/unverifiable evidence may only support
+rejection with a mandatory reason; the integrity state is stored in the human
+audit event and operational request event.
+
+**Rationale:** A case can wait in the queue after intake. Successful verification
+days earlier cannot authorize approval if the original later disappears or
+changes. Rejection must remain available so missing-evidence cases do not become
+permanently undecidable.
+
+## D-058 - Application-owned four-eyes invariant
+
+**Status:** Accepted and implemented.
+
+**Decision:** Derive the authenticated submission actor from the immutable
+`reimbursement_received` event and expose it with review details. Deny a
+decision when that actor matches the reviewer, when claimed submitter email
+matches reviewer email, or when legacy actor identity is unavailable. Enforce
+the rule in `ReviewService` as well as the HTTP adapter. The compatibility
+adapter gives only explicitly preprocessed fixtures a synthetic actor.
+
+**Rationale:** Email-only comparison allowed an admin to submit on another
+employee's behalf and then review the same request. A future adapter must not be
+able to bypass the service's separation-of-duties invariant.
+
+## D-059 - Executable and configuration identity
+
+**Status:** Accepted and implemented.
+
+**Decision:** Carry an immutable `build_id` and SHA-256 of the complete effective
+configuration through processing runs, business events, human decisions, and
+every operational HTTP event. Persist only the final configuration digest, not
+its secrets. The AWS script derives the default build ID from a clean Git commit
+and `uv.lock`; accountable CI may provide its own validated identity.
+
+**Rationale:** Provider/prompt/policy hashes are insufficient to reproduce an
+operation if the deployed code or effective security/extractor configuration is
+unknown.
+
+## D-060 - Scalable canonical client identifiers
+
+**Status:** Accepted and implemented.
+
+**Decision:** Use the canonical `transportation` category code across submitter
+and review controls while retaining `transport` only as a legacy display alias.
+Generate request IDs from 128 bits of browser randomness, retain backend
+fingerprint conflict protection, and constrain every review request-ID path to
+the same 1–128-character grammar.
+
+**Rationale:** A 32-bit suffix has an unacceptable birthday-collision rate near
+million-request workloads. Divergent category codes silently defeat filters,
+and unbounded path identifiers create needless parsing/database risk.
+
+## D-061 - Distinct synthetic AWS seed actor
+
+**Status:** Accepted and implemented.
+
+**Decision:** Provision one interactive sandbox admin and one reserved,
+non-interactive `assessment:seed-submitter` identity with a random password used
+only by the deployment process and discarded afterward. The interactive admin
+can review seeded cases. Their own `/submit` request still requires another
+reviewer, which the minimal sandbox does not provision automatically.
+
+**Rationale:** Seeding with the same account used for review would correctly
+make the supplied pending example unreviewable under D-058. The separate actor
+keeps the sandbox executable without weakening four-eyes control.
+
+## D-062 - Possible duplicate receipt control
+
+**Status:** Proposed production control; not implemented.
+
+**Decision:** Do not automatically reject equal bytes without an approved fraud
+policy. In the production evidence ledger, index immutable object
+checksum/version and evaluate reuse with merchant, receipt date, amount, actor,
+and an approved time window. Route a `POSSIBLE_DUPLICATE_RECEIPT` signal to
+human review and retain the comparison evidence.
+
+**Rationale:** Request-ID idempotency prevents duplicate processing of one
+request but does not stop identical receipt bytes under different IDs. Equal
+bytes can indicate fraud or a legitimate retry/multi-line allocation, so policy
+ownership and false-positive measurement are required.
 
 ## Decision template
 

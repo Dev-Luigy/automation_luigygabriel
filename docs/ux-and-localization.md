@@ -4,18 +4,20 @@ This document defines the standalone product experience accepted in D-032
 through D-035. It does not assume any existing RecargaPay frontend, identity
 provider, database, CRM, or notification channel.
 
-The implemented repository provides authenticated intake and all-status result
-APIs plus the reviewer slice. The submitter web portal and privileged
-audit/administration surface below remain planned; attachment bytes are not
-accepted or served.
+The implemented repository provides a trilingual submitter portal, authenticated
+managed-file intake, an owner-scoped all-status tracker, and the reviewer
+workspace. A privileged cross-case audit/administration surface remains
+planned. The assessment stores receipt bytes in a private immutable filesystem
+adapter and serves them only through a case-bound, authenticated, audited route;
+versioned S3, malware scanning, and approved retention remain production work.
 
 ## Product information architecture
 
 ```mermaid
 flowchart TB
-    Login["Standalone managed login\nplanned for production"]
-    Login --> Submitter["Submitter portal\nplanned"]
-    Login --> Review["Review operations\nimplemented slice"]
+    Login["Assessment Basic login\nmanaged identity planned for production"]
+    Login --> Submitter["Submitter portal\nimplemented"]
+    Login --> Review["Review operations\nimplemented"]
     Login --> Audit["Audit and administration\nplanned"]
 
     Submitter --> NewClaim["New reimbursement\nclaim + receipt upload"]
@@ -35,15 +37,19 @@ flowchart TB
 
 | Role | Primary job | Visible information | Explicitly excluded |
 | --- | --- | --- | --- |
-| Submitter | Create and track their own reimbursement | Uploaded receipt, submitted facts, processing state, final outcome, approved explanation | Model prompts/responses, another user's cases, reviewer identity, internal rule trace |
-| Reviewer | Resolve cases that require judgment | Searchable pending queue, OCR source evidence, attachment references, claimed/extracted comparison, problems, rules, policy version, decision form | Identity administration and unrestricted audit export |
-| Auditor | Reconstruct who did what, when, why, and with which versions | Immutable decisions/events, actors, correlations, policy/model/input/output hashes, before/after states | Ability to alter a financial decision |
-| Administrator | Operate access and approved configuration | Invitations, roles, deprovisioning, access reviews, operational configuration history | Financial approval merely because the user is an administrator |
+| Submitter | Create and track their own reimbursement | Their uploaded receipt, submitted facts, processing state, final outcome, and approved explanation | Model prompts/responses, another user's cases, reviewer identity, internal rule trace |
+| Reviewer | Resolve cases that require judgment | Searchable pending queue, OCR source evidence, controlled original file, claimed/extracted comparison, problems, rules, policy version, and decision form | Identity administration and unrestricted technical-audit export |
+| Auditor | Inspect case evidence without changing a monetary outcome | Pending queue, case detail, controlled original file, and sanitized business timeline | Decision controls and unrestricted cross-case technical-audit export |
+| Administrator | Exercise all assessment capabilities for setup and demonstration | Submitter, reviewer, and auditor routes, still subject to self-review denial | A production account-lifecycle or policy-administration UI, which is not implemented |
 
-Authentication does not imply every permission. The assessment currently lacks
-object-level authorization and gives configured Basic users global scope; this
-is a production blocker. Production must enforce route/object predicates and
-separation of duties in the service and database query boundary.
+Authentication does not imply every permission. The assessment uses closed
+submitter, reviewer, auditor, and administrator roles. A submitter can read only
+a request whose `submitted_by` email matches the authenticated principal;
+reviewers and auditors can read review evidence; only reviewers and
+administrators can decide; and no identity may decide its own reimbursement.
+Reviewer/auditor visibility is still global rather than team-, region-, or
+legal-entity-scoped. Production must replace Basic authentication and add those
+database predicates, managed account lifecycle, MFA, and access review.
 
 ## Review operations layout
 
@@ -69,8 +75,10 @@ flowchart LR
 ```
 
 No bulk approve/reject control is provided. A financial decision remains an
-individual, version-checked command with an authenticated actor and mandatory
-rationale.
+individual, version-checked command with an authenticated actor, mandatory
+rationale, and a durable `Idempotency-Key`. A transport retry reuses the same
+key and original ETag; only an identical normalized command can replay the
+original decision result.
 
 ## Server-side discovery contract
 
@@ -113,7 +121,7 @@ pages one at a time.
 flowchart LR
     intent{User intent}
     pending["Pending work queue"]
-    request["Exact-ID all-status API (implemented)\nUI explorer planned"]
+    request["Exact-ID all-status tracker\nimplemented for submitters"]
     audit["Audit search (planned)"]
     detail["Authorized request detail"]
 
@@ -126,12 +134,13 @@ flowchart LR
 ```
 
 The implemented pending queue answers an operational question and stays bounded
-by server-side filters, stable ordering, and a cursor. The authenticated
-`GET /api/requests/{request_id}` answers an exact support/investigation lookup
-across all statuses without queue traversal, but it has no dedicated UI or
-support authorization role. The target audit search remains a privileged
-specification across events, actors, correlations, and versions; no cross-case
-audit screen/API exists.
+by server-side filters, stable ordering, and a cursor. The submitter portal's
+exact-ID tracker calls `GET /api/requests/{request_id}` across all retained
+statuses without queue traversal and relies on server-side ownership checks;
+reviewers and auditors may use the same API for investigation. It is not a
+completed-case list or full-text explorer. The target audit search remains a
+privileged specification across events, actors, correlations, and versions; no
+cross-case operational-audit screen/API exists.
 
 Search and pagination remain subject to authorization before ordering or
 limiting. A future team, region, legal-entity, or separation-of-duty scope must
@@ -142,33 +151,40 @@ therefore be part of the database predicate, not a browser-side filter.
 Today, the explicit request action in a table row or card opens a detail drawer.
 It shows the claim, OCR source text, normalized facts, detected problems,
 claimed-versus-extracted comparison, deterministic rule evaluations, policy
-version, attachment-location strings, and an independently loaded sanitized
-business timeline. The timeline has localized labels, preserves original
-codes/rationale, and exposes actor, time, event/correlation IDs, transitions,
-and approved scalar payload fields with bounded cursor pagination. The API
-response also carries safe model-invocation metadata and any persisted human
-decision, but the current drawer does not render the technical trace. This is
-useful decision context, but it is not yet a complete traceability workspace:
-business events now cover received, processing, automated decision, review
-enqueue, and human decision, while technical/security events remain protected;
-the read is not recorded as an access event, and original file bytes cannot be
-previewed or downloaded.
+version, managed attachment metadata, and an independently loaded sanitized
+business timeline. A managed attachment exposes an authenticated case-bound
+open action; the service re-reads the immutable envelope, verifies its SHA-256
+and media signature, returns the original bytes with `no-store`, and records
+the file access in the operational ledger. Historical references that were
+persisted before managed intake remain text-only. New HTTP intake rejects every
+non-empty reference that is not a valid existing `evidence:att_*` object.
 
-The target detail experience has four sections:
+The timeline has localized labels, preserves original codes/rationale, and
+exposes actor, time, event/correlation IDs, transitions, and approved scalar
+payload fields with bounded cursor pagination. The API response also carries
+safe model-invocation metadata and any persisted human decision, but the drawer
+does not render the protected technical trace. Business events cover receipt,
+processing and recovery, automated decision, review enqueue, and human
+decision. A separate privacy-bounded operational ledger records every HTTP
+attempt, including authentication/authorization failures, searches, case reads,
+validation and server errors, upload, and file access.
+
+The complete detail model has four sections:
 
 1. **Evidence** — original OCR text, normalized object, claim comparison,
    problems, and deterministic rules.
-2. **Business timeline** — implemented for intake, processing start, automated
-   decision, review enqueue, and human decision with actors, timestamps,
-   versions, and correlations. Model attempts are separately stored technical
-   events; retry/access coverage remains future work.
+2. **Business timeline** — implemented for intake, processing start/recovery,
+   automated decision, review enqueue, and human decision with actors,
+   timestamps, versions, and correlations. Model attempts remain separately
+   protected technical records.
 3. **Technical trace** — provider/model and prompt versions, hashes,
    parameters, latency, attempts, and errors. Raw provider responses remain in
    protected storage and require a separately authorized, purpose-limited,
    audited reveal when policy permits access.
-4. **Original files** — on-demand controlled preview or download with attachment
-   identity, checksum, version, MIME type, size, scan status, object-level
-   authorization, short-lived delivery, and an immutable access event.
+4. **Original files** — the assessment implements on-demand controlled delivery
+   with attachment identity, checksum, MIME type, size, case authorization, and
+   an access event. Production must add S3 object-version identity, quarantine,
+   malware/active-content state, approved derivatives, and lifecycle policy.
 
 Queue and card responses must never contain original bytes, permanent signed
 links, object-store credentials, or unrestricted internal storage locations.
@@ -185,9 +201,14 @@ simple next-page demonstration:
 - a newly enqueued case is excluded from an already-started cursor traversal,
   while a concurrently completed case may disappear because the cursor is not
   a cross-request MVCC snapshot;
-- two reviewers can open the same case; the implemented ETag and transactional
-  version check prevent two final decisions, but assignment, presence, and an
-  expiring work claim remain planned to avoid duplicated effort;
+- two reviewers can open the same case; ETag/version checks allow one state
+  transition, while durable command idempotency makes an identical retry return
+  the original decision and rejects reuse for a different reviewer, outcome,
+  rationale, request, or version. Assignment, presence, and an expiring human
+  work claim remain planned to avoid duplicated effort;
+- a process crash can leave an active run until its lease expires; the next
+  identical intake atomically marks the old run/attempt abandoned, appends a
+  recovery run and event, and prevents the late worker from deciding;
 - previous-page navigation currently depends on in-memory cursor history, so a
   reload or a shared link does not restore a deep traversal;
 - old cursor expiry, signing-key rotation, multi-instance key sharing, and a
@@ -235,29 +256,38 @@ If a future feature produces a translation of evidence, it is a separately
 labeled derivative with source language, target language, provider/version,
 input/output hashes, and timestamp. It never replaces the original.
 
-## Planned standalone submitter journey
+## Implemented standalone submitter journey
 
 ```mermaid
 sequenceDiagram
     actor Submitter
-    participant Portal as "Submitter portal — planned"
-    participant API as "Intake/status API — implemented for OCR text"
-    participant Store as "SQL + private object storage"
-    participant Pipeline as "Asynchronous processing"
+    participant Portal as "Trilingual submitter portal"
+    participant API as "Authenticated same-origin API"
+    participant Evidence as "Private filesystem evidence adapter"
+    participant Pipeline as "Synchronous extraction + policy"
+    participant SQL as "SQLite state + trace"
 
-    Submitter->>Portal: Enter claim and select receipt
-    Portal->>API: Create validated request
-    API->>Store: Persist request and upload authorization
-    API-->>Portal: Request ID + upload target
-    Portal->>Store: Upload receipt bytes
-    Store-->>Pipeline: Durable processing event
-    Portal->>API: Read own request status
-    API-->>Portal: Processing / pending review / final result
+    Submitter->>Portal: Authenticate, enter claim/OCR text, select JPEG/PNG/PDF
+    Portal->>API: POST /api/attachments + CSRF
+    API->>Evidence: Validate, hash, and atomically store original bytes
+    Evidence-->>Portal: evidence:att_* reference + checksum metadata
+    Portal->>API: POST /api/requests with managed reference
+    API->>Pipeline: Extract facts and apply deterministic policy
+    Pipeline->>SQL: Atomic state, trace, decision, optional review enqueue
+    API-->>Portal: Request ID + sanitized current result
+    Portal->>API: GET /api/requests/{request_id}
+    API-->>Portal: Owner-authorized current/final result
 ```
 
-The current executable provides the create/status routes synchronously for
-supplied OCR text, but not this upload portal, receipt-byte/object-storage path,
-asynchronous processing, or submitter-specific ownership authorization.
+The portal derives `submitted_by` from the authenticated session rather than a
+free-form identity field. The browser submits one bounded file, and public HTTP
+intake accepts only the managed reference returned by the upload route; an
+empty list remains valid but prevents automatic approval. The exact-ID tracker
+searches the retained database, not only the current page, and the API returns
+`404` for another submitter's request. The assessment still depends on
+caller-supplied OCR text and runs synchronously. Production replaces the local
+store and synchronous pipeline with versioned S3 quarantine and durable queue
+workers while preserving the same domain and authorization invariants.
 
 ## Accessibility and safe interaction
 
@@ -271,18 +301,21 @@ asynchronous processing, or submitter-specific ownership authorization.
 - Sensitive case data and tokens are not persisted in browser storage.
 - Loading, empty, filtered-empty, server error, stale version, and competing
   decision are separate states with actionable recovery.
-- The detail view identifies attachment preview as unavailable until an
-  authenticated object-level path is implemented.
+- Managed evidence opens only through the authenticated case-bound route;
+  legacy reference strings are explicitly identified as unavailable.
 
 ## Current validation evidence
 
-The reviewer slice is implemented and was exercised in a real browser with
-`pt-BR`, `en`, and `es`; a `client_meal` filter and localized chip; table, card,
-and focused-detail views; claimed-versus-extracted comparison; and an individual
-confirmed decision. A 16-case QA dataset produced a 10-item first cursor page
-and a six-item second page with no repeated request ID. The decision returned
-HTTP 201, refreshed the queue and KPI summary, displayed its audit-event ID, and
-produced no browser log errors.
+Both the submitter and reviewer slices were exercised in a real browser with
+`pt-BR`, `en`, and `es`. The submitter run verified session-derived identity
+survives locale changes, canonical `transportation`, a 128-bit request-ID
+suffix, and same-origin API construction. The reviewer run covered queue search,
+table/card and focused detail, claimed-versus-extracted comparison, OCR,
+structured extraction, rules, managed original, business timeline, and one
+confirmed individual decision. A prior 16-case QA dataset produced a 10-item
+first cursor page and a six-item second page with no repeated request ID. The
+decision returned HTTP 201, refreshed the queue and KPI summary, and displayed
+its audit-event ID. Final browser warnings/errors were empty.
 
 Automated coverage checks translation-catalog key parity, bounded controls,
 cursor navigation wiring, safe DOM use, absence of sensitive browser storage,
@@ -291,9 +324,12 @@ codes, the absence of dead external navigation, and a target that is outside
 the first unfiltered page but found by a new server-side search. Timeline tests
 also cover its independent loading/error/empty/content states, retry/load-more
 wiring, defensive payload whitelist, trilingual catalog parity, deduplication,
-and signed pagination contract. This is functional and UX evidence for the
-reviewer slice; it is not a production load test, and this timeline increment
-did not receive a new manual browser run.
+and signed pagination contract. Authorization tests cover route capabilities,
+cross-submitter concealment, auditor read-only behavior, and self-review denial.
+Evidence tests cover bounded uploads, media signatures, checksum revalidation,
+case-bound reads, decision-time fail-closed approval, reasoned degraded-evidence
+rejection, and operational access audit. This is functional and UX
+evidence for the assessment; it is not a production load test.
 
 ## Scale and usability validation still required
 

@@ -7,8 +7,8 @@ or architecture action in this repository.
 
 - Human review is a first-class capability of Expense Agent and must not depend
   on an external task-management or messaging SaaS.
-- The reviewer experience is a single internal web screen using plain HTML,
-  CSS, and vanilla JavaScript. The assessment serves those assets from the
+- The submitter and reviewer experiences use plain HTML, CSS, and vanilla
+  JavaScript. The assessment serves those assets from the
   Python service; the accepted AWS target serves the same data-free shell from
   private S3 through CloudFront while Python Lambda owns the APIs. Do not add
   React, Next.js, or a separate frontend runtime unless new infrastructure
@@ -21,14 +21,25 @@ or architecture action in this repository.
   request version, and audit context.
 - Reviewer identity comes from verified authentication context and never from
   a freely supplied request-body field.
-- Persist the human decision, reimbursement status transition, and audit event
-  atomically. Repeated or competing decisions must fail with a conflict.
+- Bind four-eyes to the authenticated submission actor recorded in the
+  immutable intake event, not only to claimed email. Enforce it inside the
+  application service and fail closed when authorship cannot be verified.
+- Revalidate every managed original immediately before a human decision.
+  Approval requires `verified` evidence; missing, corrupt, invalid, or legacy
+  evidence may only be rejected with a mandatory reason and audited integrity
+  state.
+- Persist the decision-command binding, human decision, reimbursement status
+  transition, and audit event atomically. An identical retry replays the
+  original result; divergent key reuse or a competing command conflicts.
 - Production traffic is HTTPS. Local HTTP is permitted only for development and
   tests. Keep deployment-specific TLS termination explicit in documentation.
 - Render all untrusted reimbursement/OCR values through safe text operations;
   never interpolate them as executable HTML.
 - Keep financial decisions deterministic. Probabilistic models extract or
   verify evidence but are not the policy authority.
+- Carry a validated immutable build ID and SHA-256 of effective configuration
+  through processing, human decisions, timelines, and operational audit. Never
+  persist configuration secrets merely to make the digest reproducible.
 - Treat Expense Agent as a standalone product. It owns its submitter upload and
   tracking experience, internal reviewer operations console, and controlled
   audit/administration experience. Do not depend on an existing RecargaPay
@@ -88,31 +99,44 @@ or architecture action in this repository.
 
 ## Current completeness boundary
 
-- The implemented assessment executable now covers authenticated request intake,
-  deterministic receipt-text extraction, the baseline policy, all three
-  automated routes, exact all-status lookup, the internal review queue, and an
-  atomic approve/reject command.
-- The default extractor is an offline deterministic parser for the supplied OCR
-  text. A bounded HTTPS/JSON provider adapter exists, but no live model provider
-  is configured and binary OCR itself remains outside the assessment input
-  boundary.
-- Attachment storage locations are persisted and shown, but authenticated file
-  download/preview is not implemented.
+- The implemented assessment executable covers a standalone trilingual
+  upload/track portal, managed receipt evidence, authenticated request intake,
+  deterministic receipt-text extraction, policy v3, all three automated routes,
+  exact all-status lookup, the internal review queue, and an idempotent atomic
+  approve/reject command.
+- The default extractor is an offline deterministic parser for supplied OCR
+  text. A bounded HTTPS/JSON provider is explicitly environment-selectable, but
+  no live provider is configured and binary OCR bound to uploaded bytes remains
+  outside the assessment.
+- New public intake accepts only managed JPEG/PNG/PDF evidence. The local store
+  preserves exact bytes and metadata in immutable envelopes and revalidates
+  SHA-256/media on case-scoped authenticated reads. It has no malware scan,
+  uploader ownership, S3 version, OCR binding, or retention workflow.
+- Request-ID replay protects one request, not receipt reuse across request IDs.
+  Cross-case duplicate detection remains an unimplemented production control;
+  do not automatically reject equal bytes without approved merchant/date/
+  amount/actor/window policy.
 - The detail UI exposes a sanitized, cursor-paginated business timeline covering
   intake, processing start, automated routing, review enqueue, and human
   decision where applicable. Immutable 1:N processing attempts and separate
   technical/security events are persisted but deliberately have no normal
-  reviewer API or UI. Reprocessing, evidence reads, and administrative events
-  remain outside the implemented flow.
-- An authenticated intake API and exact all-status result API are implemented.
-  A non-technical employee upload/tracking portal and controlled audit/admin UI
-  are still standalone product surfaces to build; do not represent the JSON API
-  alone as those user experiences.
+  reviewer API or UI. Every HTTP attempt is also appended to a separate
+  privacy-bounded operational ledger. Cross-case audit search/export and a
+  controlled audit/admin UI remain outside the implemented flow.
+- Assessment roles, owner-only submitter result reads, and self-review denial
+  are implemented. They do not replace managed identity lifecycle or
+  team/tenant/assignment/value/purpose authorization in production.
+- Expired processing leases recover on an identical retry and fence stale
+  workers. There is no heartbeat, watchdog, retry cap, asynchronous queue/DLQ,
+  or operator replay control.
 - SQLite, HTTP Basic, and the direct API Gateway/Lambda/EFS deployment are
   assessment adapters. The repository includes a locally validated, still
   unprovisioned SAM sandbox; it is not the accepted production deployment and
   must use synthetic data only. SQLite on EFS/NFS remains unsafe for production
   even with rollback journal mode and bounded concurrency.
+- The sandbox provisions one interactive admin and one distinct non-interactive
+  seed actor. The admin can review seed cases but cannot review a request they
+  submit; a multi-operator demo needs additional configured principals.
 - The AWS hybrid serverless topology is the accepted production target, but its
   Aurora/outbox, Cognito/BFF authorization, S3 evidence, SQS/DLQ workers, and
   CloudFront/WAF adapters are not implemented or deployed. No AWS account was

@@ -54,13 +54,18 @@ flowchart LR
 flowchart TB
     subgraph Implemented["Implemented and tested"]
         Intake["Authenticated strict intake"]
+        Submitter["Trilingual submitter portal\nupload + exact-ID tracking"]
+        Attachment["Managed original evidence\nchecksum + controlled read"]
         Workflow["Synchronous processing service"]
+        Recovery["Expired-lease processing recovery"]
         Offline["Offline deterministic extractor"]
         Policy["Deterministic baseline policy"]
         Result["All-status exact-ID result API"]
         Queue["Paginated reviewer console"]
-        Review["Atomic human decision"]
-        Trace["1:N processing attempts + scoped events"]
+        Review["Atomic idempotent human decision"]
+        DecisionEvidence["Decision-time original verification"]
+        Authorization["Roles + object authorization\nself-review denied"]
+        Trace["1:N attempts + business/HTTP audit\nbuild/config identity"]
         SQLite["SQLite assessment repository"]
         LambdaAdapter["Mangum Lambda adapter"]
         SAM["Validated SAM sandbox package"]
@@ -68,10 +73,9 @@ flowchart TB
     end
 
     subgraph Partial["Partial assessment boundaries"]
-        HTTPProvider["Optional HTTPS+JSON extractor\nimplemented, not composed by default"]
-        Attachment["Attachment references only"]
+        HTTPProvider["Configurable HTTPS+JSON extractor\ndeterministic default"]
         Identity["HTTP Basic/PBKDF2 assessment identity"]
-        UI["Reviewer UI only\nno submitter/audit UI"]
+        UI["No privileged audit/admin UI"]
         Execution["Synchronous only"]
         Provision["AWS stack not provisioned or load-tested"]
     end
@@ -80,14 +84,15 @@ flowchart TB
         Edge["CloudFront/WAF + private S3 shell"]
         Cognito["Cognito + opaque BFF session"]
         Lambda["API Gateway + Lambda + SQS/DLQ"]
-        Evidence["Versioned private S3 evidence"]
+        EvidenceTarget["Versioned private S3 evidence"]
         Aurora["Aurora PostgreSQL + RDS Proxy + outbox"]
         Archive["Immutable approved audit archive"]
     end
 
+    Submitter --> Attachment --> Intake
     Intake --> Workflow --> Offline --> Policy --> Result
-    Policy --> Queue --> Review
-    Workflow --> Trace --> SQLite
+    Policy --> Queue --> DecisionEvidence --> Review
+    Workflow --> Recovery --> Trace --> SQLite
     Queue --> SQLite
     SAM --> LambdaAdapter --> Intake
     SAM --> Provision
@@ -96,15 +101,15 @@ flowchart TB
     Cognito -. production replacement .-> Identity
     Lambda -. production replacement .-> Execution
     Aurora -. production replacement .-> SQLite
-    Evidence -. production completion .-> Attachment
+    EvidenceTarget -. production replacement .-> Attachment
     Aurora --> Archive
 
     classDef done fill:#dcfce7,stroke:#15803d,color:#14532d
     classDef partial fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef target fill:#f1f5f9,stroke:#64748b,color:#334155,stroke-dasharray:5 5
-    class Intake,Workflow,Offline,Policy,Result,Queue,Review,Trace,SQLite,LambdaAdapter,SAM,CI done
-    class HTTPProvider,Attachment,Identity,UI,Execution,Provision partial
-    class Edge,Cognito,Lambda,Evidence,Aurora,Archive target
+    class Intake,Submitter,Attachment,Workflow,Recovery,Offline,Policy,Result,Queue,Review,DecisionEvidence,Authorization,Trace,SQLite,LambdaAdapter,SAM,CI done
+    class HTTPProvider,Identity,UI,Execution,Provision partial
+    class Edge,Cognito,Lambda,EvidenceTarget,Aurora,Archive target
 ```
 
 ## Assignment coverage
@@ -115,28 +120,32 @@ flowchart TB
 | Extract receipt information | **Implemented for supplied OCR text** | Default offline parser plus optional bounded HTTPS+JSON adapter; receipt-byte OCR is not implemented. |
 | Validate receipt and claim | **Implemented** | Versioned deterministic amount, category, currency, age, quality, and threshold rules. |
 | Auto-approve eligible requests at or below BRL 200 | **Implemented** | Only when every rule passes. |
-| Review requests above BRL 2,000 | **Implemented interpretation** | All claims above BRL 200 route to review; `> 2,000` has a distinct reason. The literal threshold/collision policy still needs stakeholder validation. |
-| Reject receipts older than 90 days | **Implemented interpretation** | Age uses the caller-supplied submission date in `America/Sao_Paulo`; exactly 90 is valid; rejection currently wins over review. Both the authoritative timestamp and collision precedence block production until validated/corrected. |
-| Explain and trace every operation | **Partial** | Processing/decision trace is implemented with input hashes, runs, 1:N attempts, rules, scoped events, and human rationale. Authentication success/failure, reads, searches, validation/orchestration errors, and evidence-access audit are not comprehensively recorded. |
-| Human judgment and recorded reviewer | **Implemented** | Internal UI/API, server-derived assessment identity, mandatory rationale, atomic v3→v4 transaction. |
+| Review requests above BRL 2,000 | **Implemented interpretation** | The non-bypassable high-value gate routes these claims to a human even when another rule requires rejection. The mandatory rejection is preserved and prevents a human approval. |
+| Reject receipts older than 90 days | **Implemented interpretation** | Age uses the caller-supplied submission date in `America/Sao_Paulo`; exactly 90 is valid. A normal old receipt is rejected; an old claim above BRL 2,000 still traverses the non-bypassable review gate and cannot be approved. The authoritative timestamp remains a production blocker. |
+| Explain and trace every operation | **Implemented assessment boundary** | Processing/decision traces include hashes, runs, attempts, rules, rationale, build ID, and effective-configuration hash. A separate sanitized append-only ledger records every HTTP attempt, including authentication failures, reads, searches, validation/errors, and managed-file access. Production still needs an externally immutable export. |
+| Human judgment and recorded reviewer | **Implemented** | Internal UI/API, server-derived identity, mandatory rationale, decision-time evidence state, application-layer self-review denial, optimistic versioning, and a durable idempotency key in the atomic decision transaction. Approval requires verified originals. |
 | Safe high-volume review navigation | **Implemented contract; unproven production SLO** | Database-scoped search/filter/sort and signed keyset cursors; no million-row load test or PostgreSQL adapter. |
-| Original receipt access | **Not implemented** | Only caller-supplied attachment references are stored/displayed. |
-| Standalone submitter experience | **API only** | Intake/result endpoints exist; no upload/tracking web screen. |
-| AWS serverless deployment | **Assessment sandbox implemented; production target only** | SAM can package API Gateway/Lambda/VPC/EFS with synthetic seed data. The template/build are validated but no account was provisioned. It deliberately lacks production Cognito, Aurora/outbox, S3 evidence, SQS/DLQ, WAF, and CloudFront adapters. |
+| Original receipt access | **Implemented assessment boundary** | Submitters upload JPEG/PNG/PDF bytes to an immutable filesystem adapter. HTTP intake accepts only returned `evidence:att_*` references; reviewers use a case-bound authenticated route and every decision re-verifies checksum/media. Degraded evidence can only be rejected. Malware scanning, versioned S3, and approved retention are production work. |
+| Standalone submitter experience | **Implemented** | Trilingual upload/claim form, authenticated submitter identity, safe result, and exact-ID tracking across retained statuses. |
+| Recovery and replay | **Implemented assessment boundary** | Request fingerprints prevent duplicate processing, expired processing leases create a traceable recovery run, late workers cannot commit, and human decision retries replay the original result only when the full command fingerprint matches. |
+| Authorization and separation of duties | **Implemented assessment boundary** | Closed submitter/reviewer/auditor/admin roles, submitter-owned result lookup, reviewer/auditor read gates, reviewer-only decisions, and actor-bound self-review denial inside `ReviewService`. Production still needs managed identity, team scopes, MFA, and lifecycle administration. |
+| AWS serverless deployment | **Assessment sandbox implemented; production target only** | SAM can package API Gateway/Lambda/VPC/EFS and seed synthetic managed PDFs through HTTPS. The template/build are locally validated but no account was provisioned. It deliberately lacks production Cognito, Aurora/outbox, versioned S3 evidence, SQS/DLQ, WAF, and CloudFront adapters. |
 
 ## Verification snapshot
 
-- 151/151 automated tests passed with warnings treated as errors in the final
-  local run.
-- Ruff, JavaScript syntax validation, `git diff --check`, ShellCheck, SAM lint,
-  a containerized x86_64 SAM build, and Lambda-runtime artifact import passed.
+- The full automated suite passed with warnings treated as errors in the latest
+  local verification: **254 tests**.
+- Ruff, JavaScript syntax validation, `git diff --check`, package build, SAM
+  lint, ShellCheck, a containerized x86_64 SAM build, and import from the
+  matching Lambda Python 3.12 runtime image passed in the release-candidate run.
 - Acceptance tests preserve the three assignment objects and expected routes:
   `REQ-0001` and `REQ-0002` auto-approved, `REQ-0003` pending review.
 - Boundary tests cover BRL 200.00, 200.01, 2,000.00, 2,000.01, exactly 90
   days, and an old high-value collision.
-- Integration tests cover real FastAPI → processing → SQLite behavior,
-  idempotent replay, payload conflict, extraction exception, rollback, human
-  v3→v4 decision, safe serialization, and 1:N immutable attempts.
+- Integration tests cover real FastAPI → upload → processing → SQLite behavior,
+  managed-only evidence references, idempotent intake and human decisions,
+  payload conflict, extraction exception, expired-lease recovery, rollback,
+  authorization, safe serialization, and 1:N immutable attempts.
 - The GitHub Actions workflow uses commit-pinned actions, frozen/pinned Python
   build inputs, and runs tests, Ruff, and package build on pushes/pull requests;
   monthly Dependabot updates cover pip and Actions dependencies.

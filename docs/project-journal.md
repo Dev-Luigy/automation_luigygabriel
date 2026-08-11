@@ -834,7 +834,8 @@ delaying them to simulate elapsed work.
 - follow-up hardening that rejects provider redirects, unsafe large JSON floats,
   duplicate canonical reviewer IDs, and mutation of derived minor units even
   when upgrading a database with the older trigger definition;
-  separates the verified `authenticated_caller` actor from claimed
+  separates the verified intake actor (now stored with literal business type
+  `submitter`; operational HTTP uses `authenticated_principal`) from claimed
   `submitted_by`; and makes legacy backfill atomic;
 - the exact three assignment samples, boundary/integration/security/rollback
   tests, pinned CI/build backends, pip/Actions Dependabot coverage, local run
@@ -969,6 +970,105 @@ and approved.
 assets, architecture/features/database documents, central diagram gallery,
 final report, README, and time log. Implementation commits are `8d45af3` and
 `2246ff0`.
+
+## 2026-08-11 - J-026 - Final compliance audit and safety closure
+
+**Question:** After the evaluator's guidance and the full repository audit,
+what remained before the Python assessment could be delivered without
+overstating production readiness?
+
+**Findings:** The core assignment behavior was present, but several financial
+safety edges and the documentation lagged behind the executable. High-value
+review needed literal non-bypassable behavior; a missing or arbitrary receipt
+reference could not be allowed to authorize auto-approval; operational reads,
+denials, and failures needed local audit coverage; expired work and ambiguous
+human-decision retries needed durable recovery; and the standalone product
+needed its own submission surface and explicit roles.
+
+**Decisions implemented:** D-049 through D-056. `baseline-v3` always routes
+claims above BRL 2,000 to a person and prevents approval when deterministic
+rejection evidence exists. Missing evidence routes to review. Public HTTP
+intake accepts only uploaded, integrity-checked `evidence:att_*` references.
+Every HTTP attempt gets a sanitized operational event. Submitter, reviewer,
+auditor, and admin capabilities are explicit, owner reads and self-review rules
+are enforced, and auditor UI is read-only. Five-minute leases recover expired
+processing on identical retry. Human decisions require an atomic command key
+and fingerprint. `/submit` now supports trilingual upload and exact-ID tracking;
+`/reviews` retains filtered/keyset-paginated triage, original evidence, and the
+business timeline.
+
+**AWS boundary:** The SAM package was updated to expose both product URLs and
+store local evidence on encrypted EFS. Its seeder uploads generated synthetic
+PDF bytes before intake. It remains an unprovisioned assessment sandbox:
+SQLite/EFS, one config-backed admin by default, direct API Gateway, bounded
+concurrency, and no NAT/provider call cannot support the claimed production
+scale. The accepted Aurora/S3/SQS/Cognito/CloudFront/WAF/outbox target remains
+documentation, not deployed infrastructure.
+
+**Remaining production gates:** Trusted server time, OCR cryptographically
+bound to the clean object, malware/quarantine and lifecycle governance,
+uploader ownership, managed identity and richer ABAC, asynchronous
+backpressure/watchdog/DLQ, PostgreSQL/outbox/WORM export, audit search/export,
+load/accuracy/security/restore tests, and accountable approvals.
+
+**Time reporting:** Keep the user's approximately 10-hour total. This entry
+does not reconstruct missing per-activity durations or alter historical commit
+timestamps.
+
+**Evidence affected:** Policy, workflow and review services, SQLite schema,
+attachment adapter, FastAPI routes, both browser surfaces, AWS seed/package,
+automated tests, README, architecture/data/domain/feature/UX diagrams, decision
+and assumption registers, final report, and deployment runbook.
+
+## 2026-08-11 - J-027 - Final traceability, evidence, and scale audit
+
+**Question:** After the compliance closure, could any supported path still
+approve money without the original, bypass four-eyes, lose executable identity,
+or collide at the stated scale?
+
+**Findings:** Four concrete risks remained. Email-only self-review checking let
+an admin submit on behalf of another email and review the same case. Evidence
+was verified at intake/read but not immediately before a human decision. Audit
+records identified provider/prompt/policy but not the deployed build and
+effective configuration. Browser request IDs used only a 32-bit random suffix,
+and the submitter/reviewer category controls disagreed on `transport` versus
+the extractor's `transportation`. Review request-ID paths were also not all
+bounded. A separate open risk remains: identical receipt bytes can be reused
+under distinct request IDs because request idempotency is not receipt-fraud
+deduplication.
+
+**Decisions implemented:** D-057 through D-061. `ReviewService` now derives the
+authenticated submitter from the immutable receipt event, enforces four-eyes
+itself, and fails closed when legacy authorship is unknown. Decision processing
+re-reads managed originals; only `verified` evidence can approve, while a
+reasoned rejection records `missing`, `failed`, `invalid_reference`, or
+`unverifiable`. Build ID and effective-configuration SHA-256 now accompany
+processing, human, timeline, and every HTTP-operation event. AWS deployment
+derives the build identity from a clean Git commit plus `uv.lock`, and seeds
+through a distinct random one-run actor so the interactive admin can review the
+provided pending example without weakening four-eyes. Client request IDs now
+use 128 random bits, UI codes use canonical `transportation`, and review paths
+share the bounded request-ID grammar.
+
+**Open decision:** D-062 proposes a checksum/object-version reuse index combined
+with merchant/date/amount/actor/window and a human-review signal. Automatic
+rejection was not authorized because byte equality can have legitimate causes.
+
+**Browser evidence:** Both `/submit` and `/reviews` were exercised in the real
+local browser across English, Portuguese, and Spanish. The run verified
+session-derived identity after locale changes, same-origin API construction,
+queue search, card detail, OCR/extraction/rules/original/timeline presentation,
+and a confirmed human decision with queue refresh. Browser warnings/errors were
+empty. This is functional assessment evidence, not accessibility, security, or
+million-row proof.
+
+**Automated evidence:** The release-candidate suite passed 254 tests with
+warnings treated as errors, plus Ruff, JavaScript syntax, diff checks, package
+build, SAM lint, ShellCheck, a containerized x86_64 SAM build, and import from
+the matching Lambda Python 3.12 runtime image. No AWS resource was provisioned.
+
+**Time reporting:** These fixes remain inside the user's approximate 10-hour
+total; no per-step duration or commit timestamp was fabricated.
 
 ## Entry template
 
