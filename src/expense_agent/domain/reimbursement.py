@@ -10,6 +10,7 @@ from expense_agent.domain.decisions import (
     HumanDecision,
     PolicyDecisionRoute,
     ReviewOutcome,
+    RuleOutcome,
 )
 from expense_agent.domain.exceptions import (
     DomainValidationError,
@@ -123,6 +124,19 @@ class ReimbursementCase:
     def record_human_decision(self, decision: HumanDecision) -> None:
         self._require_status(ReimbursementStatus.PENDING_REVIEW)
         self._require_matching_request(decision.request_id)
+
+        automated = next(
+            (item for item in reversed(self._decisions) if isinstance(item, AutomatedDecision)),
+            None,
+        )
+        has_mandatory_rejection = automated is not None and any(
+            evaluation.outcome is RuleOutcome.REJECT
+            for evaluation in automated.rule_evaluations
+        )
+        if has_mandatory_rejection and decision.outcome is ReviewOutcome.APPROVED:
+            raise DomainValidationError(
+                "a mandatory rejection rule prevents approval after human review"
+            )
 
         next_status = {
             ReviewOutcome.APPROVED: ReimbursementStatus.APPROVED_AFTER_REVIEW,

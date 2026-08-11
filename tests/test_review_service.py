@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -180,4 +181,50 @@ def test_service_requires_a_reason_and_typed_authenticated_identity() -> None:
             reviewer="forged-user",  # type: ignore[arg-type]
             expected_version=1,
             correlation_id="corr-2",
+        )
+
+
+def test_service_does_not_allow_human_approval_to_override_mandatory_rejection() -> None:
+    details = _details()
+    mandatory_decision = replace(
+        details.automated_decision,
+        reasons=(
+            DecisionReason(
+                code="RECEIPT_TOO_OLD",
+                message="Receipt exceeds the mandatory age limit.",
+            ),
+            DecisionReason(
+                code="HIGH_VALUE_REVIEW_REQUIRED",
+                message="High-value gate requires human review.",
+            ),
+        ),
+        rule_evaluations=(
+            RuleEvaluation(
+                rule_id="receipt-age",
+                rule_version="1.1.0",
+                outcome=RuleOutcome.REJECT,
+                message="Receipt must be rejected.",
+            ),
+            RuleEvaluation(
+                rule_id="claim-amount-threshold",
+                rule_version="1.1.0",
+                outcome=RuleOutcome.REVIEW,
+                message="High-value claim requires human review.",
+            ),
+        ),
+    )
+    service = ReviewService(
+        FakeReviewRepository(replace(details, automated_decision=mandatory_decision)),
+        clock=lambda: REVIEWED_AT,
+    )
+    reviewer = ReviewerIdentity("user-1", "reviewer@company.com", "Reviewer")
+
+    with pytest.raises(DomainValidationError, match="prevents approval"):
+        service.decide(
+            request_id=details.request_id,
+            outcome=ReviewOutcome.APPROVED,
+            reason="Attempted override",
+            reviewer=reviewer,
+            expected_version=details.version,
+            correlation_id="corr-mandatory-reject",
         )

@@ -242,7 +242,7 @@ def test_critical_amount_boundaries_use_extracted_evidence(
     assert decision.route is expected_route
 
 
-def test_90_day_boundary_and_old_receipt_precedence_use_submission_date() -> None:
+def test_90_day_boundary_and_non_bypassable_high_value_gate_use_submission_date() -> None:
     exactly_90_days = _boundary_submission(
         request_id="BOUNDARY-AGE-90",
         amount="200.00",
@@ -263,7 +263,7 @@ def test_90_day_boundary_and_old_receipt_precedence_use_submission_date() -> Non
     assert valid_extraction.status is ExtractionStatus.SUCCEEDED
     assert valid_decision.route is PolicyDecisionRoute.AUTO_APPROVED
     assert old_extraction.status is ExtractionStatus.SUCCEEDED
-    assert old_decision.route is PolicyDecisionRoute.REJECTED
+    assert old_decision.route is PolicyDecisionRoute.HUMAN_REVIEW
     assert "RECEIPT_TOO_OLD" in {reason.code for reason in old_decision.reasons}
     assert "HIGH_VALUE_REVIEW_REQUIRED" in {
         reason.code for reason in old_decision.reasons

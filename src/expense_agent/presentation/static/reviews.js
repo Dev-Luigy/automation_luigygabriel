@@ -181,6 +181,7 @@ const translations = {
     authoritativeAction: "Authoritative human action",
     recordDecision: "Record your decision",
     decisionAuditNotice: "Your authenticated identity, rationale, timestamp, and case version will be written to the immutable audit trail.",
+    mandatoryRejectionNotice: "A mandatory rejection rule applies. This high-value case still requires human review, but it cannot be approved.",
     rationale: "Rationale",
     required: "required",
     rationalePlaceholder: "Explain the evidence and reasoning behind your decision.",
@@ -425,6 +426,7 @@ const translations = {
     authoritativeAction: "Ação humana autoritativa",
     recordDecision: "Registrar sua decisão",
     decisionAuditNotice: "Sua identidade autenticada, justificativa, horário e versão do caso serão gravados na trilha de auditoria imutável.",
+    mandatoryRejectionNotice: "Uma regra de rejeição obrigatória se aplica. Este caso de alto valor ainda exige revisão humana, mas não pode ser aprovado.",
     rationale: "Justificativa",
     required: "obrigatória",
     rationalePlaceholder: "Explique as evidências e o raciocínio que sustentam sua decisão.",
@@ -669,6 +671,7 @@ const translations = {
     authoritativeAction: "Acción humana autoritativa",
     recordDecision: "Registrar tu decisión",
     decisionAuditNotice: "Tu identidad autenticada, justificación, hora y versión del caso se guardarán en el registro de auditoría inmutable.",
+    mandatoryRejectionNotice: "Se aplica una regla de rechazo obligatorio. Este caso de alto valor aún requiere revisión humana, pero no puede aprobarse.",
     rationale: "Justificación",
     required: "obligatoria",
     rationalePlaceholder: "Explica la evidencia y el razonamiento que sustentan tu decisión.",
@@ -827,7 +830,7 @@ const elementIds = [
   "timeline-section", "timeline-count", "timeline-loading", "timeline-error",
   "timeline-error-message", "retry-timeline", "timeline-empty", "timeline-content",
   "timeline-list", "timeline-load-more",
-  "decision-panel", "decision-reason", "reason-counter", "reject-button",
+  "decision-panel", "mandatory-rejection-notice", "decision-reason", "reason-counter", "reject-button",
   "approve-button", "confirm-dialog", "confirm-title", "confirm-copy", "confirm-icon",
   "confirm-button", "toast", "announcer",
 ];
@@ -1858,6 +1861,11 @@ function updateReasonCounter() {
   elements["reason-counter"].textContent = `${elements["decision-reason"].value.length} / 2000`;
 }
 
+function hasMandatoryRejection(caseData = state.selectedCase) {
+  const rules = caseData?.automated_decision?.rule_evaluations;
+  return Array.isArray(rules) && rules.some((rule) => rule?.outcome === "reject");
+}
+
 function renderCase(caseData, { preserveReason = false } = {}) {
   const existingReason = preserveReason ? elements["decision-reason"].value : "";
   state.selectedCase = caseData;
@@ -1876,7 +1884,10 @@ function renderCase(caseData, { preserveReason = false } = {}) {
   elements["decision-reason"].value = existingReason;
   updateReasonCounter();
   const isPending = caseData.status === "pending_review";
+  const approvalBlocked = isPending && hasMandatoryRejection(caseData);
   elements["decision-panel"].hidden = !isPending;
+  elements["mandatory-rejection-notice"].hidden = !approvalBlocked;
+  elements["approve-button"].disabled = approvalBlocked;
   const decisionNav = document.querySelector('.detail-nav a[href="#decision-panel"]');
   if (decisionNav) decisionNav.hidden = !isPending;
   setDetailState("content");
@@ -1917,6 +1928,7 @@ function renderConfirmation(outcome) {
 }
 
 function requestDecision(outcome) {
+  if (outcome === "approved" && hasMandatoryRejection()) return;
   const reason = elements["decision-reason"].value.trim();
   if (!reason) {
     showToast(t("rationaleRequired"), true);
@@ -1932,7 +1944,7 @@ function requestDecision(outcome) {
 
 function setDecisionBusy(busy) {
   state.deciding = busy;
-  elements["approve-button"].disabled = busy;
+  elements["approve-button"].disabled = busy || hasMandatoryRejection();
   elements["reject-button"].disabled = busy;
   elements["confirm-button"].disabled = busy;
 }

@@ -95,6 +95,56 @@ def test_case_cannot_skip_directly_to_human_decision() -> None:
         case.record_human_decision(decision)
 
 
+def test_mandatory_rejection_rule_requires_rejected_human_outcome() -> None:
+    case = ReimbursementCase(submission=submission(), opened_at=NOW)
+    case.start_processing()
+    case.record_automated_decision(
+        AutomatedDecision(
+            decision_id="DEC-MANDATORY-REJECT",
+            request_id="REQ-0001",
+            route=PolicyDecisionRoute.HUMAN_REVIEW,
+            decided_at=NOW,
+            policy_version="baseline-v2",
+            reasons=(
+                DecisionReason(
+                    code="RECEIPT_TOO_OLD",
+                    message="Receipt is older than the policy limit.",
+                ),
+            ),
+            rule_evaluations=(
+                RuleEvaluation(
+                    rule_id="receipt-age",
+                    rule_version="1.1.0",
+                    outcome=RuleOutcome.REJECT,
+                    message="Receipt must be rejected.",
+                ),
+            ),
+        )
+    )
+    approval = HumanDecision(
+        decision_id="DEC-APPROVE",
+        request_id="REQ-0001",
+        outcome=ReviewOutcome.APPROVED,
+        reviewer="manager@company.com",
+        reason="Attempted override",
+        decided_at=NOW,
+    )
+
+    with pytest.raises(DomainValidationError, match="prevents approval"):
+        case.record_human_decision(approval)
+
+    rejection = HumanDecision(
+        decision_id="DEC-REJECT",
+        request_id="REQ-0001",
+        outcome=ReviewOutcome.REJECTED,
+        reviewer="manager@company.com",
+        reason="Confirmed mandatory age rejection",
+        decided_at=NOW,
+    )
+    case.record_human_decision(rejection)
+    assert case.status is ReimbursementStatus.REJECTED
+
+
 def test_case_rejects_decision_for_another_request() -> None:
     case = ReimbursementCase(submission=submission(), opened_at=NOW)
     case.start_processing()

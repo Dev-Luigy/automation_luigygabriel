@@ -147,7 +147,7 @@ def test_exactly_90_days_old_is_valid() -> None:
     assert age.facts["business_timezone"] == "America/Sao_Paulo"
 
 
-def test_receipt_older_than_90_days_is_rejected_before_other_routes() -> None:
+def test_non_bypassable_high_value_gate_precedes_automatic_rejection() -> None:
     claim = submission(amount="2500.00", category="lodging")
     extraction = successful_extraction(
         claim,
@@ -158,7 +158,7 @@ def test_receipt_older_than_90_days_is_rejected_before_other_routes() -> None:
 
     decision = evaluate(claim, extraction)
 
-    assert decision.route is PolicyDecisionRoute.REJECTED
+    assert decision.route is PolicyDecisionRoute.HUMAN_REVIEW
     assert "RECEIPT_TOO_OLD" in {reason.code for reason in decision.reasons}
     assert "HIGH_VALUE_REVIEW_REQUIRED" in {reason.code for reason in decision.reasons}
     assert "CATEGORY_MISMATCH" in {reason.code for reason in decision.reasons}

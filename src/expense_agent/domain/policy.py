@@ -23,8 +23,8 @@ from expense_agent.domain.extraction import ExtractionResult, ExtractionStatus, 
 from expense_agent.domain.reimbursement import ReimbursementSubmission
 from expense_agent.domain.value_objects import Currency, Money
 
-BASELINE_POLICY_VERSION = "baseline-v1"
-BASELINE_RULE_VERSION = "1.0.0"
+BASELINE_POLICY_VERSION = "baseline-v2"
+BASELINE_RULE_VERSION = "1.1.0"
 
 AUTO_APPROVAL_LIMIT = Decimal("200.00")
 HIGH_VALUE_LIMIT = Decimal("2000.00")
@@ -150,7 +150,15 @@ class BaselinePolicy:
         self._evaluate_amount_threshold(submission, add_reason, evaluations)
 
         outcomes = {evaluation.outcome for evaluation in evaluations}
-        if RuleOutcome.REJECT in outcomes:
+        high_value_review_required = any(
+            reason.code == "HIGH_VALUE_REVIEW_REQUIRED" for reason in reasons.values()
+        )
+        if high_value_review_required:
+            # The assignment marks this gate as non-bypassable. A mandatory
+            # rejection remains recorded and constrains the later human
+            # outcome, but cannot skip the high-value review itself.
+            route = PolicyDecisionRoute.HUMAN_REVIEW
+        elif RuleOutcome.REJECT in outcomes:
             route = PolicyDecisionRoute.REJECTED
         elif RuleOutcome.REVIEW in outcomes:
             route = PolicyDecisionRoute.HUMAN_REVIEW

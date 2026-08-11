@@ -97,6 +97,17 @@ def test_review_console_preserves_evidence_and_uses_safe_browser_state() -> None
     assert 'data-i18n="attachmentLimitation"' in html
 
 
+def test_review_console_blocks_approval_when_a_mandatory_rejection_rule_applies() -> None:
+    html = _asset("reviews.html")
+    javascript = _asset("reviews.js")
+
+    assert 'id="mandatory-rejection-notice"' in html
+    assert 'data-i18n="mandatoryRejectionNotice"' in html
+    assert 'rule?.outcome === "reject"' in javascript
+    assert 'outcome === "approved" && hasMandatoryRejection()' in javascript
+    assert 'busy || hasMandatoryRejection()' in javascript
+
+
 def test_review_console_has_no_dead_product_navigation_and_one_queue_table() -> None:
     html = _asset("reviews.html")
 
