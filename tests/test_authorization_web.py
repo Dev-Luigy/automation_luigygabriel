@@ -225,3 +225,38 @@ def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path)
         json={"outcome": "rejected", "reason": "Self-review must remain blocked."},
     )
     assert denied.status_code == 403
+
+
+def test_managed_attachment_must_exist_and_pass_integrity_before_intake(
+    tmp_path: Path,
+) -> None:
+    client, _database_path = _client(tmp_path)
+    alice_write = _write_headers(client, "alice")
+    uploaded = client.post(
+        "/api/attachments",
+        headers={
+            **alice_write,
+            "Content-Type": "application/pdf",
+            "X-Attachment-Filename": "receipt.pdf",
+        },
+        content=PDF_BYTES,
+    )
+    assert uploaded.status_code == 201
+
+    valid_payload = _payload("REQ-MANAGED-VALID", "alice@example.com")
+    valid_payload["attachments"] = [uploaded.json()["reference"]]
+    accepted = client.post("/api/requests", headers=alice_write, json=valid_payload)
+
+    missing_payload = _payload("REQ-MANAGED-MISSING", "alice@example.com")
+    missing_payload["attachments"] = [f"evidence:att_{'0' * 32}"]
+    missing = client.post("/api/requests", headers=alice_write, json=missing_payload)
+
+    malformed_payload = _payload("REQ-MANAGED-MALFORMED", "alice@example.com")
+    malformed_payload["attachments"] = ["evidence:not-an-opaque-id"]
+    malformed = client.post("/api/requests", headers=alice_write, json=malformed_payload)
+
+    assert accepted.status_code == 201
+    assert missing.status_code == 422
+    assert missing.json()["detail"] == "Managed attachment reference does not exist"
+    assert malformed.status_code == 422
+    assert malformed.json()["detail"] == "Managed attachment reference is invalid"
