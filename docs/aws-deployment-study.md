@@ -20,28 +20,62 @@ current assessment through a real AWS HTTPS URL:
 ./deploy/aws/deploy.sh
 ```
 
-The script creates a minimal build context, validates SAM, builds the x86_64
-Python 3.12 Lambda ZIP in the AWS build container, deploys CloudFormation, and
-optionally submits the three provided synthetic examples through HTTPS. The
-stack describes API Gateway HTTP API, one Mangum/FastAPI Lambda, two private
-subnets without NAT, encrypted EFS with two mount targets and an access point,
-14-day logs, X-Ray, and error/throttle alarms. EFS backup is enabled and the
-filesystem is retained on stack deletion.
+The script requires a clean Git worktree (or an accountable CI-supplied build
+ID), binds the Git commit and `uv.lock` SHA-256, creates a minimal build context,
+validates SAM, builds the x86_64 Python 3.12 Lambda ZIP in the AWS build
+container, deploys CloudFormation, and optionally seeds the three provided
+synthetic examples through HTTPS with a distinct random one-run actor. For each
+missing request, the seeder generates a valid PDF containing only synthetic
+assessment metadata in memory, uploads it through `/api/attachments`, and
+submits the returned managed reference with the sample. The stack describes API
+Gateway HTTP API, one Mangum/FastAPI Lambda, two private subnets without NAT,
+encrypted EFS with two mount targets and an access point, 14-day logs, X-Ray,
+and error/throttle alarms. EFS backup is enabled and the filesystem is retained
+on stack deletion.
 
 This is an **implemented and locally validated deployment artifact, not a
 provisioned stack**. No AWS credentials/account were available or used and no
-cloud resource was created. Validation covered 151 tests, Ruff, JavaScript,
-ShellCheck, `sam validate --lint`, an x86_64 containerized `sam build`, and import
-of the built artifact inside the matching Lambda Python 3.12 runtime.
+cloud resource was created. The recorded local packaging validation covered the
+automated suite, Ruff, JavaScript, ShellCheck, `sam validate --lint`, an x86_64
+containerized `sam build`, and import of the built artifact inside the matching
+Lambda Python 3.12 runtime. This update does not claim those cloud-facing checks
+were rerun against a live account.
 
 The sandbox is synthetic-data-only. It retains HTTP Basic, synchronous work,
-global reviewer scope, attachment references, and SQLite. SQLite rollback
-journal `DELETE` removes WAL's direct network-filesystem incompatibility but
-does not make EFS/NFS locking and sync reliable enough for a financial ledger.
-Reserved concurrency four merely keeps the current browser usable while bounding
-the experiment; it is not a scalability or durability result. The full
+and SQLite, but its assessment boundary is stronger than the original snapshot:
+
+- a trilingual submitter portal uploads bounded JPEG/PNG/PDF evidence and tracks
+  an owned request by exact ID;
+- new HTTP intake accepts only existing `evidence:att_*` references, while an
+  empty evidence list routes to review instead of auto-approval;
+- an immutable filesystem envelope on EFS records attachment identity, MIME,
+  size, and SHA-256; case-bound reads and human decisions revalidate it and are
+  audited. Approval requires verified evidence, while degraded evidence can
+  only be rejected with its state recorded;
+- submitter/reviewer/auditor/admin roles gate routes, submitter results are
+  object-authorized, auditors cannot decide, and self-review is denied;
+- every HTTP attempt has a sanitized append-only operational event in addition
+  to business/model traces, with build and effective-configuration identity;
+- expired processing leases can be recovered into a new immutable run, and
+  human decisions use a durable command key plus ETag for safe retry.
+
+Reviewer/auditor read scope is still global rather than team-scoped. The
+sandbox provisions one interactive administrator and a reserved non-interactive
+seed actor. The admin can review seeded cases but cannot review a request they
+submit; another configured principal is required for that demonstration. The
+filesystem adapter has no malware scan, quarantine, approved retention, or S3
+object-version identity. SQLite rollback journal `DELETE` removes WAL's direct
+network-filesystem incompatibility but does not make EFS/NFS locking and sync
+reliable enough for a financial ledger. Reserved concurrency four merely keeps
+the current browser usable while bounding the experiment; it is not a
+scalability, availability, or durability result. The full
 [sandbox runbook](../deploy/aws/README.md) documents prerequisites, overrides,
 inspection, retained-EFS cleanup, cost warning, and production migration gates.
+
+The EFS Access Point enforces POSIX UID/GID `1000`. SAM explicitly supplies
+that trusted owner to the attachment adapter; local mode defaults to the process
+effective UID. This closes a cold-start compatibility gap without relaxing
+private-directory mode checks.
 
 This package does not supersede the accepted target below. It exists to make
 the assessment easy to inspect without pretending that Aurora, Cognito, S3

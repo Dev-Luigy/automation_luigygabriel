@@ -2,334 +2,360 @@
 
 ## Executive summary
 
-Expense Agent is an auditable Python reimbursement service designed for a
-mission-critical financial domain. The implemented assessment receives a
-strict request, records immutable normalized input, extracts receipt facts from
-the supplied OCR text, applies a deterministic/versioned policy, and either
-auto-approves, rejects, or creates an internal human-review case. A reviewer can
-search the bounded queue, inspect evidence and business history, and make one
-authenticated approve/reject decision with a mandatory rationale.
+Expense Agent is a standalone Python reimbursement service built for the code
+assessment. It accepts an authenticated claim, preserves the original receipt,
+extracts structured facts from the supplied OCR text, applies a deterministic
+versioned policy, and produces one of three routes: automatic approval, human
+review, or rejection. Human judgment lives inside the service and records who
+decided, what they decided, why, when, and against which immutable case version.
 
-The central design choice is that extraction may be heuristic or provider-
-backed, but it never owns a monetary decision. `BaselinePolicy` is pure,
-deterministic, versioned, and produces reason codes plus rule evaluations.
+The implementation deliberately separates probabilistic extraction from
+financial authority. A model may produce evidence; `BaselinePolicy
+baseline-v3` owns the monetary route. The same validated facts and policy
+version produce the same rule evaluations and outcome.
 
 ```mermaid
 flowchart LR
-    Input["Authenticated strict intake"] --> Durable["Received v1 + input hash"]
-    Durable --> Extract["Traceable extraction"]
-    Extract --> Rules["Deterministic policy"]
-    Rules -->|"all pass and ≤ BRL 200"| Auto["Auto-approved v3"]
-    Rules -->|"receipt > 90 days"| Reject["Rejected v3"]
-    Rules -->|"uncertain / mismatch / > BRL 200"| Human["Pending review v3"]
-    Human --> Decision["Reviewer + rationale + atomic v4"]
+    S["Submitter portal\nPT-BR / EN / ES"] --> U["Managed receipt upload"]
+    U --> E["Immutable local evidence\nmedia + size + SHA-256"]
+    S --> I["Strict intake + request fingerprint"]
+    I --> X["Configured extractor\ndeterministic or HTTPS+JSON"]
+    X --> P["BaselinePolicy baseline-v3"]
+    P -->|"all checks pass and <= BRL 200"| A["Auto-approved"]
+    P -->|"mandatory reject and <= BRL 2,000"| R["Rejected"]
+    P -->|"uncertain / > BRL 200"| Q["Pending review"]
+    Q --> H["Reviewer decision\nreason + identity + command key"]
+    I --> DB[("SQLite assessment ledger")]
+    H --> DB
+    E --> F["Case-scoped original-file access"]
+    HTTP["Every HTTP attempt"] --> OA["Sanitized operational audit"]
 ```
 
-The code-assessment path is implemented and locally executable. A restricted
-AWS SAM sandbox is packaged and locally validated for synthetic demonstration,
-but no AWS account was mutated. The accepted AWS hybrid serverless production
-topology is documented and deliberately not claimed as implemented or deployed.
+The repository also packages a one-command AWS SAM assessment sandbox. That
+sandbox is locally validated but was not provisioned. The accepted production
+topology—CloudFront/WAF, Cognito/BFF, API Gateway/Lambda, SQS/DLQ, private
+versioned S3, Aurora PostgreSQL/outbox, and approved immutable export—remains a
+documented target, not implemented infrastructure.
 
-## Requirements and implementation result
+## Assignment compliance
 
-| Assignment concern | Result |
-| --- | --- |
-| Receive reimbursement objects | Implemented through strict authenticated `POST /api/requests`. |
-| Extract receipt information | Implemented for supplied OCR text through an offline deterministic parser; a bounded HTTPS+JSON adapter is optional. Binary receipt OCR is not implemented. |
-| Auto-approve eligible claims at or below BRL 200 | Implemented only when every validation rule passes. |
-| Human-review monetary/uncertain cases | Implemented assessment interpretation. All amounts above BRL 200 route to review; `> 2,000` has explicit high-value evidence, pending policy-owner validation. |
-| Reject receipts older than 90 days | Implemented relative to submission date in `America/Sao_Paulo`; exactly 90 days is valid. Collision precedence versus mandatory high-value review remains an interpretation to validate. |
-| Record human judgment and reviewer | Implemented inside the service with canonical authenticated identity and mandatory rationale. |
-| Processing and decision traceability | Implemented across normalized input/fingerprint, versions, run, 1:N attempts, hashes/raw output, policy reasons/rules, scoped processing events, and human decision. This is not traceability of every operation. |
-| Reproducible behavior | Policy is pure/versioned; exact input and output hashes/configuration are retained. Provider stochastic output itself is evidence, not assumed reproducible. |
-| User access to results | Exact all-status API is implemented; reviewer web UI is implemented. Submitter and privileged audit UIs remain absent. |
-| Original receipt file | Not implemented: attachment values are references, not uploaded/authorized bytes. |
-| High-volume navigation | Server-side search/filter/sort and signed keyset pagination are implemented; production cardinality/SLO has not been load-tested. |
-| AWS delivery | One-command SAM assessment sandbox is implemented and locally validated, not provisioned. It is explicitly separate from the unimplemented production topology. |
+| Assignment concern | Implemented result | Honest boundary |
+| --- | --- | --- |
+| Python implementation | Domain, application, infrastructure, and FastAPI presentation layers | None for the assessment |
+| Receive reimbursement requests | Strict authenticated `POST /api/requests`; framework-free `/submit` portal | Processing is synchronous |
+| Extract receipt information | Offline deterministic OCR-text parser and an environment-selectable bounded HTTPS+JSON adapter | No binary OCR bound to the uploaded bytes; no live provider evaluation |
+| Auto-approve eligible claims at or below BRL 200 | Only when extraction, facts, currency, age, claim consistency, and receipt evidence all pass | Production needs trusted time and trusted OCR |
+| Human-review uncertain/monetary cases | BRL 200.01–2,000 and every `> BRL 2,000` claim route to review; extraction uncertainty and mismatches also review | Intermediate-band interpretation still needs policy-owner confirmation |
+| Reject receipts older than 90 days | At or below BRL 2,000, age over 90 days rejects; exactly 90 days is valid | The assessment age anchor is client-supplied `submitted_at` |
+| High-value gate cannot be ignored | `> BRL 2,000` always reaches a person. If another rule mandates rejection, the domain forbids approval | Reviewer must record the confirming rejection reason |
+| Human decision and reviewer | Canonical authenticated actor, outcome, mandatory rationale, timestamp, version, evidence-integrity state, and audit event commit atomically; application-layer four-eyes blocks self-review | Config-backed Basic identity is assessment-only |
+| Full local traceability | Business/technical/security events plus one sanitized operational event for every HTTP request attempt | No outbox, audit-search UI, or approved off-host WORM archive |
+| Reproducibility | Input/output hashes, provider/model, prompt version/hash, parameters, timing, protected raw response, policy/rule versions, `build_id`, and `configuration_hash` over the secret-safe effective configuration | A stochastic provider response is preserved evidence, not assumed reproducible |
+| Original receipt | Managed JPEG/PNG/PDF upload; opaque ID; immutable envelope; checksum/media verification; case-scoped audited access | No malware scan, uploader ownership, S3 object version, OCR binding, or retention workflow |
+| Usable human interface | Separate trilingual submit/track and review/triage surfaces | No privileged audit-administration UI or completed-case browser |
+| Large collections | Database-scoped search/filter/sort and signed keyset pagination; exact-ID all-status lookup | No million-row load/SLO result |
+| Documentation in English | Architecture, model, database, feature, decisions, assumptions, costs, runbook, and report | Source OCR/free text remains original evidence |
 
-## Architecture
+This follows the evaluator's guidance: ClickUp, email, and external SaaS are not
+the authoritative review mechanism. A human action becomes a first-class
+application record in the same decision and audit path as automated work.
 
-The repository follows domain/application/infrastructure/presentation
-boundaries. FastAPI validates and authenticates HTTP commands. Application
-services orchestrate ports. The domain owns money, state transitions, evidence,
-and policy. SQLite and extractor implementations are replaceable adapters.
+## Deterministic policy
+
+The implemented policy identifier is `baseline-v3`; each rule evaluation uses
+version `1.2.0`. Money uses exact `Decimal` through `Money`, and receipt dates
+are interpreted in `America/Sao_Paulo`.
 
 ```mermaid
-flowchart TB
-    UI["Reviewer HTML/CSS/JS"] --> HTTP["FastAPI"]
-    Client["Intake/result client"] --> HTTP
-    HTTP --> Processing["ProcessingService"]
-    HTTP --> Review["ReviewService"]
-    Processing --> Extractor["ReceiptExtractor port"]
-    Processing --> Policy["BaselinePolicy"]
-    Processing --> Repo["WorkflowRepository port"]
-    Review --> Repo
-    Extractor --> Offline["Default offline parser"]
-    Extractor -. optional .-> Provider["Bounded HTTPS+JSON endpoint"]
-    Repo --> SQLite[("SQLite assessment ledger")]
+flowchart TD
+    Start["Submission + extraction"] --> File{"Managed receipt present?"}
+    File -->|"no"| Review["Human review"]
+    File -->|"yes"| Quality{"Extraction complete\nand unambiguous?"}
+    Quality -->|"no"| Review
+    Quality -->|"yes"| Facts{"Critical facts present?"}
+    Facts -->|"no"| Review
+    Facts -->|"yes"| Age{"Receipt age"}
+    Age -->|"future / unknown"| Review
+    Age -->|"> 90 days"| HighOld{"Claim > BRL 2,000?"}
+    HighOld -->|"no"| Reject["Automatic rejection"]
+    HighOld -->|"yes"| Confirm["Human review\napproval forbidden"]
+    Age -->|"0–90 days"| Match{"BRL + amount +\ncategory agree?"}
+    Match -->|"no / unknown"| Review
+    Match -->|"yes"| Amount{"Claimed amount"}
+    Amount -->|"<= 200.00"| Approve["Automatic approval"]
+    Amount -->|"200.01–2,000.00"| Review
+    Amount -->|"> 2,000.00"| Confirm
 ```
 
-Processing is synchronous for the assessment, but no SQL transaction spans an
-extractor call. The repository first records a running attempt and technical
-event, calls the adapter outside a transaction, then records terminal output and
-hash. Final extraction, automated decision, financial status, review enqueue,
-and business events commit atomically.
+Every decision carries reason codes and all rule evaluations. Missing evidence
+produces `MISSING_RECEIPT_EVIDENCE`; high value produces
+`HIGH_VALUE_REVIEW_REQUIRED`; old receipts produce `RECEIPT_TOO_OLD`. Rules are
+not short-circuited, so an auditor can see all facts that influenced the route.
 
-See [architecture.md](architecture.md), [database.md](database.md), and
-[domain-model.md](domain-model.md) for the detailed diagrams and invariants.
+The three supplied examples and critical threshold/age collisions are
+executable acceptance tests. They prove the assessment contract, not model
+accuracy on a representative production dataset.
 
-## Baseline policy and ambiguity resolution
+## Architecture and object model
 
-The assignment leaves several boundaries implicit. The implemented decisions
-are recorded as versioned evidence. They are assessment interpretations, not a
-claim that a RecargaPay policy owner confirmed every ambiguous collision:
+The code follows ports and adapters:
 
-- BRL only, exact `Decimal`, Brazilian receipt dates interpreted as
-  `DD/MM/YYYY`.
-- Receipt age uses the immutable submission date converted to
-  `America/Sao_Paulo`; processing delays do not change the route.
-- Exactly 90 days is valid; only age greater than 90 rejects.
-- Exactly BRL 200 may auto-approve if all extraction, fact, currency, age,
-  amount, and category checks pass.
-- BRL 200.01 through 2,000 and exactly 2,000 route to human review.
-- Above BRL 2,000 routes to human review with a distinct mandatory high-value
-  reason.
-- A reject evaluation currently has precedence over review. Therefore an old
-  high-value receipt is rejected, while both old/high-value evaluations remain
-  in the audit evidence. The assignment's simultaneous “reject old” and “always
-  review high value” wording is ambiguous; this precedence needs stakeholder
-  validation before production.
-- Extraction failure/warning, missing facts, future receipt date, unsupported
-  currency, and amount/category disagreement route to review rather than being
-  guessed or silently approved.
-
-Every automated decision carries a policy version, at least one reason, and all
-rule ID/version/outcome/facts. The three assignment samples and critical
-boundaries are executable acceptance tests.
-
-## Idempotency, concurrency, and auditability
-
-`request_id` is the public idempotency key. A canonical SHA-256 hash covers the
-normalized immutable input. The same ID/hash returns the stored result without
-another extraction; the same ID with a different hash returns `409`. Replay and
-conflict attempts are preserved as security events.
+- domain: money, submission, attachment references, extraction result,
+  automated/human decisions, reimbursement aggregate, and policy;
+- application: processing/recovery and review use cases plus repository,
+  extraction, attachment, and operational-audit ports;
+- infrastructure: SQLite repository, deterministic/HTTP extractors, and the
+  immutable filesystem evidence adapter;
+- presentation: FastAPI, configuration/security composition, Lambda adapter,
+  and the two static browser surfaces.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> received: v1
-    received --> processing: v2
-    processing --> auto_approved: v3
-    processing --> pending_review: v3
-    processing --> rejected: v3
-    pending_review --> approved_after_review: v4
-    pending_review --> rejected: v4
+classDiagram
+    class ReimbursementSubmission
+    class ReimbursementCase
+    class ExtractionResult
+    class AutomatedDecision
+    class HumanDecision
+    class ProcessingRun
+    class InvocationAttempt
+    class ReviewCase
+    class AttachmentMetadata
+    class AuditEvent
+    class OperationalAuditEvent
+
+    ReimbursementSubmission "1" --> "1" ReimbursementCase
+    ReimbursementSubmission "1" --> "0..*" AttachmentMetadata
+    ReimbursementCase "1" --> "0..1" ExtractionResult
+    ReimbursementCase "1" --> "0..1" AutomatedDecision
+    ReimbursementCase "1" --> "0..1" HumanDecision
+    ReimbursementCase "1" --> "1..*" ProcessingRun
+    ProcessingRun "1" --> "1..*" InvocationAttempt
+    ReimbursementCase "1" --> "0..1" ReviewCase
+    ReimbursementCase "1" --> "1..*" AuditEvent
+    ReimbursementCase "1" --> "0..*" OperationalAuditEvent
 ```
 
-Processing runs and invocation attempts have independent IDs. Attempts are
-one-to-many by run/stage/attempt and retain provider, model, prompt version/hash,
-input/output hashes, timing, parameters, status, bounded error, and protected
-raw response. Terminal rows and audit events are immutable by database trigger.
+Detailed diagrams are in [architecture.md](architecture.md),
+[domain-model.md](domain-model.md), [database.md](database.md), and the central
+[diagram gallery](diagrams.md).
 
-Human review combines an HTTP ETag precondition with a serialized state/version
-check. One SQLite transaction inserts the immutable decision, closes the review,
-updates the reimbursement, and appends its business event. A competing or
-repeated command cannot create a second decision.
+## Persistence, idempotency, and recovery
 
-Audit events are separated into business, technical, and security scopes. The
-reviewer timeline returns a whitelisted, cursor-paginated business projection;
-raw provider data and replay/conflict details stay outside normal browser APIs.
-The ledger does **not** currently audit successful/failed authentication,
-ordinary reads, searches, validation failures, every orchestration exception,
-or evidence access. Claims of “full traceability of all operations” therefore
-remain unmet beyond the implemented processing and decision path.
+Request idempotency and human-command idempotency solve different failure
+modes:
 
-## Human experience
+1. `request_id` plus a canonical immutable-input SHA-256 prevents duplicate
+   extraction and detects ID reuse with different payload data.
+2. Human decisions require `If-Match` plus `Idempotency-Key`. Only the key hash
+   is stored; a command fingerprint binds request, outcome, normalized reason,
+   reviewer ID, and expected version.
 
-The reviewer console is a same-origin static HTML/CSS/vanilla-JavaScript screen,
-served by the Python service. It supports:
+An identical request retry returns the stored result. An identical decision
+retry with the original ETag returns the original decision/event/version as
+`200`, `replayed: true`. A reused key with different command data returns `409`.
+Binding, human decision, status transition, and business audit event commit in
+one transaction. Concurrency tests prove one decision and one replay.
 
-- Portuguese, English, and Spanish presentation;
-- server-side search across the complete pending scope, not the visible page;
-- category/problem/amount/time/age filters and five stable sort orders;
-- 10–100 row signed keyset pages, table/cards/focused detail, and queue KPIs;
-- raw OCR, claim-versus-extraction evidence, policy problems/rules, attachment
-  reference strings, and a separately loaded business timeline;
-- individual approve/reject with a rationale and conflict feedback.
+Immediately before a new decision, the HTTP service re-reads every original and
+revalidates its immutable envelope, size, SHA-256, and media signature. The
+application service independently requires `verified` evidence for approval
+and rechecks the authenticated submission actor. Missing, corrupt, legacy, or
+otherwise unverifiable evidence may only be rejected; the integrity state and
+mandatory rationale are stored so the case is safely closable rather than
+stuck forever.
 
-This avoids an unnecessary React/Next.js runtime for one operational screen.
-The API remains replaceable if product complexity later justifies another
-frontend. The current absence of a submitter upload/tracking screen is explicit,
-not hidden behind an assumption about an existing RecargaPay product.
+Processing never holds a SQL transaction across provider I/O. A running attempt
+is durable before the call, terminal evidence is appended after the call, and
+v3 finalization commits extraction, automated decision, status, problems, and
+optional review enqueue atomically.
 
-## Security and privacy
+Each run has a five-minute lease. An identical retry after expiry atomically
+marks the old run and unfinished attempt abandoned, appends recovery evidence,
+and creates run N+1. One caller owns recovery; a stale worker cannot finalize.
+There is no heartbeat or background watchdog, so production still needs an
+asynchronous queue, bounded retry/backoff, DLQ, and operator replay controls.
 
-Implemented assessment controls include PBKDF2 HTTP Basic authentication,
-server-derived actors, CSRF tokens, exact origin checks, HTTPS fail-closed
-configuration, host/proxy restrictions, restrictive browser headers, safe DOM
-text rendering, strict/bounded input, safe error projection, protected raw
-provider output, and no sensitive browser storage.
+## Human and submitter experience
 
-HTTP Basic and a global assessment reviewer scope are not production identity/
-authorization. Production needs managed OIDC/MFA, invitation and recovery,
-revocation/session policy, role/team/case/purpose predicates, separation of
-duties, and identity/access audit.
+`/submit` supports:
 
-Attachment references also do not fulfill the evidence-file requirement.
-Production must preserve exact private object bytes/version/checksum, validate
-media and malware state, authorize each preview/download, and audit access
-without exposing storage credentials/keys.
+- English, Brazilian Portuguese, and Spanish presentation;
+- authenticated, non-editable submitter identity;
+- exact decimal claim input and one required JPEG/PNG/PDF;
+- upload-first managed evidence and strict intake;
+- assessment OCR text with an explicit warning that it is not derived from the
+  selected file;
+- safe ambiguous-network recovery with the same request ID; and
+- exact-ID tracking across pending and final states.
 
-### Production blockers — not optional backlog
+`/reviews` supports:
 
-The assessment correctly follows the input contract in the assignment, but the
-following conditions **prevent real monetary use** until corrected:
+- full-database pending search before pagination;
+- category, problem, amount, date, and pending-age filters;
+- stable sort modes, 10–100 row keyset pages, table and card views;
+- queue KPIs without loading millions of records into the browser;
+- claim-versus-extraction comparison, raw OCR, structured object, problems,
+  deterministic rules, original file, and sanitized business timeline; and
+- individual approve/reject with rationale, confirmation, ETag conflict
+  handling, idempotent retry, decision-time evidence verification, and a
+  visible mandatory-rejection constraint.
 
-1. **Client-controlled age anchor.** `submitted_at` arrives in the request and
-   currently anchors the 90-day rule. A caller could choose it. Production must
-   record a server-owned `received_at` at trusted ingress (or explicitly
-   separate claimed and authoritative timestamps), define timezone/clock
-   ownership, and make policy use the authoritative value.
-2. **Self-attested OCR without receipt bytes.** `raw_ocr_text` also arrives in
-   the request. The current service can auto-approve from that text without
-   receiving the original file, verifying its checksum/version, or running
-   controlled OCR on the exact scanned bytes. Production must own the upload,
-   bind trusted OCR/model inputs to the immutable clean object, and preserve
-   that evidence chain before any automatic payment decision.
-3. **Global authenticated scope without authorization.** Every configured
-   Basic account can currently read every request/evidence/timeline and decide
-   every pending case. There are no owner/role/team/tenant/case/value/purpose
-   predicates or separation of duties. Production must enforce and audit those
-   object-level rules in the service and SQL query boundary; Cognito login alone
-   would not solve this.
-4. **Incomplete all-operations audit.** Processing and financial decisions are
-   traceable, but authentication success/failure, reads, searches, validation
-   failures, every orchestration error, and protected evidence access are not.
-   Production must define and implement complete, privacy-aware security/access/
-   business audit coverage and immutable export for the required operations.
-5. **No crash/replay recovery.** A process crash after the durable v2 transition
-   or running-attempt insert can leave the request/run/attempt stranded. The
-   synchronous API has no lease, watchdog, resume command, retry policy, or DLQ
-   replay. Production must implement idempotent recovery that appends attempts
-   without duplicating a financial decision.
+API codes and stored evidence remain language-neutral/original. Only labels and
+known status/problem descriptions are localized. Untrusted values are rendered
+as bounded text, not executable HTML, and sensitive data is not stored in
+browser local/session storage.
 
-These are release gates, alongside independent legal/security approval; they
-are not cosmetic hardening or optional future features.
+## Identity, authorization, and audit
 
-## Alternatives and decisions
+Assessment credentials use salted PBKDF2 hashes and carry explicit roles:
 
-| Alternative | Decision and rationale |
+| Role | Current capability |
 | --- | --- |
-| ClickUp/email as review core | Rejected. An external SaaS cannot be the authoritative financial decision/audit boundary. |
-| Internal API only | Rejected as the user experience. Non-technical reviewers need a screen; the API remains the application boundary underneath it. |
-| React/Next.js | Not selected for one bounded screen; vanilla assets reduce runtime/build/deployment scope. |
-| n8n | Technically viable orchestration, but rejected for this Python assessment because it does not remove domain, identity, transaction, UI, or audit work. |
-| OCR plus two LLMs for every request | Not selected without labeled accuracy/cost/latency evidence. Agreement does not prove correctness when inputs share an OCR error. |
-| One extractor plus optional verifier | Current assessment uses one offline deterministic extractor. A risk-based secondary verifier remains a future experiment, not a claim. |
-| VPS/EC2 | Not selected as the accepted default for bursty unknown production load; it creates capacity and HA operations. |
-| AWS hybrid serverless | Accepted production target because APIs/jobs are short/bursty and relational audit authority is retained. Not implemented or deployed here; the Lambda/EFS SAM package is assessment-only. |
-| Kubernetes/EKS | Feasible but explicitly closed as a current choice: no measured long-running/GPU/platform requirement offsets cluster ownership. |
-| One NoSQL database for everything | Rejected. Financial relationships/transactions belong in SQL; receipt bytes belong in versioned object storage. |
+| `submitter` | Upload evidence, submit under its authenticated email, and read its own exact-ID result |
+| `reviewer` | Search/read review cases, original evidence and timeline; record decisions except self-review |
+| `auditor` | Read-only queue, evidence, original file, and timeline |
+| `admin` | All assessment capabilities, still subject to self-review denial |
 
-The full rationale and chronological feedback are in
-[decision-log.md](decision-log.md) and [project-journal.md](project-journal.md).
+The server derives the actor; decision JSON cannot forge it. The immutable
+business intake event records the authenticated submitter actor separately
+from claimed `submitted_by`, and both the HTTP adapter and `ReviewService`
+enforce the four-eyes rule. Origin/CSRF checks,
+explicit hosts/proxy trust, HTTPS fail-closed configuration, restrictive CSP and
+browser headers, bounded inputs, safe error projection, and no-store responses
+support the assessment boundary.
+
+Every HTTP request attempt appends one sanitized operational record, including
+authentication failure, denied authorization, validation error, read/search,
+static asset, upload/download, 404, or 500. Each row includes immutable
+`build_id` and a secret-safe `configuration_hash`. Processing runs bind those
+values to the policy version, and human events retain them with the
+evidence-integrity state. Business, technical, and security
+events remain separately scoped. The normal timeline exposes only whitelisted
+business history; raw provider responses and security detail stay protected.
+
+SQLite triggers prevent normal update/delete of decisions, terminal invocation
+evidence, audit rows, and decision-key bindings. This is application/database
+immutability, not administrator-resistant WORM. Production requires an Aurora
+transactional outbox and an approved off-host immutable archive.
+
+## AI/OCR trade-off
+
+Two LLMs plus OCR were evaluated and intentionally not made the default. Two
+models can inherit the same OCR error, so agreement is not proof of correctness.
+Calling both on every request roughly doubles model calls and makes tail latency
+track the slower dependency when called in parallel; sequential calls add their
+latencies. It also adds provider availability, privacy, rate-limit, and
+reconciliation failure modes.
+
+The accepted experiment is evidence-driven: compare one primary extractor and
+an optional risk-based verifier on labeled receipts. Measure field accuracy,
+false automated decisions, disagreement/review rate, tokens and unit cost,
+P50/P95/P99 latency, and provider failures before enabling any live model. The
+detailed parametric AWS and AI cost discussion is in
+[aws-deployment-study.md](aws-deployment-study.md).
+
+## AWS delivery and scale
+
+The SAM sandbox creates API Gateway HTTP API, Python 3.12 Lambda, a private VPC,
+encrypted/retained EFS for SQLite and managed evidence, logs, X-Ray, alarms, and
+bounded concurrency. The deploy script validates prerequisites and AWS identity,
+requires a clean commit (or an explicitly audited CI build ID), binds the Git
+and `uv.lock` hashes, prompts before billable changes, builds with pinned
+dependencies, deploys, and uses a distinct one-run synthetic actor to upload
+in-memory PDFs and seed the three examples. It prints both `/submit` and
+`/reviews` URLs. The single interactive sandbox admin can review seeded cases;
+its own new submissions require another reviewer because self-review remains
+blocked.
+
+No AWS account was mutated during repository work. A successful local SAM
+build is not a live EFS/Lambda smoke test. SQLite over EFS is an experimental
+packaging bridge and cannot support the stated million-request scenario.
+
+The production target uses direct private S3 upload, SQS/DLQ workers for OCR and
+model calls, Aurora PostgreSQL Serverless v2 through RDS Proxy for the
+authoritative ledger/outbox, Cognito plus opaque BFF sessions, and
+CloudFront/WAF. It must be implemented and measured only after region, data
+residency, SLO/RPO/RTO, peak traffic, provider limits, retention/legal hold,
+authorization, and cost ownership are approved.
+
+## Production release gates
+
+These are not optional polish:
+
+1. Replace client-controlled policy time with a trusted server-owned timestamp.
+2. Run approved OCR on the exact quarantined clean object and bind every model
+   input to its immutable S3 version and checksum.
+3. Add malware scanning, uploader ownership, lifecycle/legal hold/deletion, KMS
+   ownership, and tested evidence recovery.
+4. Replace Basic/config roles with managed identity, MFA, recovery/revocation,
+   durable actors/grants, and team/tenant/assignment/value/purpose rules.
+5. Replace SQLite with PostgreSQL, transactional outbox, approved immutable
+   export, backup/PITR, restore, and disaster-recovery exercises.
+6. Add asynchronous backpressure, heartbeat/watchdog, bounded retries, DLQs,
+   replay controls, provider concurrency limits, and incident operations.
+7. Add cross-case audit search/export and formally approved privacy, retention,
+   and access policies.
+8. Persist an object-version/checksum reuse index and route policy-approved
+   `POSSIBLE_DUPLICATE_RECEIPT` signals using merchant/date/amount context;
+   identical bytes under distinct requests are not currently classified.
+9. Validate model accuracy, financial false-decision rate, security, failure
+   injection, and P95/P99 behavior on representative scale.
+
+## Alternatives retained in the decision history
+
+| Alternative | Result |
+| --- | --- |
+| ClickUp/email as the review core | Rejected: the application must own the human act and audit record |
+| API only for non-technical operators | Rejected: the service now owns both browser surfaces |
+| React/Next.js | Not selected for two bounded same-origin screens |
+| n8n | Viable automation tool, rejected as the Python assessment runtime |
+| OCR plus two LLMs for every request | Not justified without labeled quality/cost/latency evidence |
+| VPS/EC2 | Not selected as the default for unknown bursty production load |
+| Kubernetes/EKS | Feasible, explicitly closed until a long-running/GPU/platform need is measured |
+| One NoSQL store for everything | Rejected: relational financial authority and object bytes have different requirements |
+
+The complete chronology is preserved in [decision-log.md](decision-log.md),
+[assumptions.md](assumptions.md), and [project-journal.md](project-journal.md).
 
 ## Verification evidence
 
-The final local quality run passed **151/151 tests with warnings treated as
-errors**, Ruff, JavaScript syntax validation, `git diff --check`, ShellCheck,
-SAM lint, an x86_64 containerized SAM build, and Lambda-runtime artifact import.
-The suite covers:
+The release-candidate run passed **254 automated tests with warnings treated as
+errors**, Ruff, JavaScript syntax checks for every browser asset,
+`git diff --check`, and Python package build. Focused tests cover:
 
-- exact money and domain transitions;
-- deterministic policy rules, precedence, and amount/age boundaries;
-- the three assignment request objects and expected routes;
-- offline/HTTPS extractor success, schema failures, timeout, response caps,
-  redirect rejection, and secret-safe behavior;
-- FastAPI authentication, CSRF/origin, strict intake, safe all-status results,
-  replay/conflict semantics, and no raw/secret leakage;
-- real SQLite automated routes, failed extraction, durable 1:N attempts,
-  scoped timelines, human v3→v4 decision, immutability, and forced rollback;
-- pending queue search/filter/sort/snapshot cursors and cross-page discovery;
-- trilingual catalog parity and safe frontend rendering.
-- HTTP API v2-to-ASGI adaptation, strict AWS build pins/minimal context, sandbox
-  template safety controls, Bash syntax, and HTTPS-only synthetic seeding.
+- exact money, age/amount boundaries, high-value collisions, and missing
+  evidence;
+- the three assignment examples and deterministic/HTTPS extractor behavior;
+- strict intake, managed upload/download integrity, authorization, CSRF/origin,
+  safe projections, and every-HTTP operational audit;
+- request replay/conflict, expired-lease recovery, stale-worker fencing, and
+  human-command replay/conflict/concurrency;
+- atomic SQLite finalization/rollback, append-only triggers, queue filters,
+  signed cursors, cross-page discovery, and business timelines;
+- trilingual catalog parity, safe DOM construction, responsive assets, Lambda
+  adaptation, AWS build pins, template controls, and synthetic HTTPS seeding.
 
-The GitHub Actions workflow uses commit-pinned actions, a frozen lockfile and
-pinned build-system packages, then performs tests, Ruff, and package build on
-every push/pull request. Dependabot monitors pip and Actions dependencies.
-Milestone commits separate policy, extractors, acceptance/CI,
-persistence/workflow, and HTTP APIs instead of obscuring the work in one final
-change.
-
-| Commit | Milestone |
-| --- | --- |
-| `b6d22bd` | Auditable human-review baseline. |
-| `f368b4f` / `0bc7132` | Deterministic policy and traceable extractor adapters. |
-| `f64c1fb` / `c6bd9d4` | Assignment acceptance suite and pinned CI. |
-| `36d4370` / `fad709e` | Durable processing persistence and authenticated intake/results. |
-| `1994c1e` | Exclude confidential temporary artifacts from packages. |
-| `8220c76` / `2352e62` | Intake/transport/identity hardening and atomic legacy migration. |
-| `b4ed985` | Pinned packaging backend and automated Python dependency updates. |
-| `2459f30` | Preserve minor-unit immutability when upgrading an existing database. |
-| `8d45af3` | Lambda adapter and configurable SQLite journal boundary. |
-| `2246ff0` | One-command SAM assessment sandbox, seed, validation, and runbook. |
-
-These are real logical milestones with normal Git timestamps; no commit was
-backdated or delayed to simulate time invested.
-
-This evidence validates the repository contract. It does not establish model
-accuracy on production receipts, million-request P95/P99 latency, a production
-availability target, or compliance approval.
-
-## Accepted production target and honest gaps
-
-The accepted standalone AWS target is CloudFront/WAF plus private S3 for the
-shell, API Gateway/Lambda for short paths, SQS/DLQs for asynchronous processing,
-versioned private S3 for evidence, Aurora PostgreSQL Serverless v2 through RDS
-Proxy for the authoritative ledger/outbox, Cognito plus an opaque BFF session,
-and DynamoDB only for short-lived session/OAuth state. Immutable approved audit
-export complements—but never replaces—the relational business record.
-
-Nothing in that sentence is deployed or implemented as the production system.
-The repository now has assessment-only SAM IaC for direct API Gateway,
-Lambda, and SQLite/EFS, but there is no Cognito/BFF, S3 evidence path, SQS
-worker/DLQ, Aurora adapter, transactional outbox/exporter, CloudFront/WAF edge,
-or cloud-account evidence. Before production, accountable owners must confirm
-region and data residency, threat/authorization model, peak workload and
-provider limits, SLO/RPO/RTO, retention/legal hold/deletion, accuracy
-thresholds, cost, and incident/recovery operations.
-
-## Recommended next steps
-
-1. Add receipt-byte upload, version/checksum/scan metadata, authorized preview/
-   download, and access audit.
-2. Add standalone submitter tracking and privileged audit/administration UI.
-3. Evaluate extractor and optional verifier on a labeled representative dataset
-   using field accuracy, false automated decisions, disagreement/review rate,
-   unit cost, and P95/P99 latency.
-4. Add asynchronous idempotent processing, retry/DLQ/replay and abandoned-run
-   recovery.
-5. Implement PostgreSQL/outbox and managed identity/authorization adapters.
-6. Implement and provision reviewed AWS **production** IaC only after the open
-   governance and capacity inputs are owned; then load, security, backup/restore,
-   and disaster-recovery test it. Do not promote the SQLite/EFS sandbox.
+The same release-candidate run passed package build, SAM lint, ShellCheck, a
+containerized x86_64 SAM build, and import from the matching Lambda Python 3.12
+runtime image. No live AWS deployment, representative load test, provider
+accuracy study, penetration test, or disaster-recovery test is claimed.
 
 ## Time invested
 
-The user reports approximately **10 hours total** invested across the project.
-The final completion block was measured precisely from
-`2026-08-10T19:47:09Z` to `2026-08-10T20:27:38Z` (`40m 29s`) and is included
-inside that rough total, not added to it. Historical work areas were not timed
-individually and remain explicitly marked `estimate required` in
-[time-log.md](time-log.md), avoiding fabricated per-activity durations.
+The user reports approximately **10 hours total**. Historical activities were
+not reconstructed into invented per-task durations. The record in
+[time-log.md](time-log.md) preserves known milestones and marks unknown values
+as `estimate required`.
 
 ## Conclusion
 
-The assessment demonstrates the core financial safety properties requested:
-deterministic decisions, exact money, explicit ambiguity handling, durable
-idempotency, per-attempt traceability, atomic human judgment, and honest
-separation between implemented local behavior and a future production stack.
-The deployable sandbox makes review easier without changing that boundary. Its
-most important remaining gap is not another LLM—it is the production evidence,
-identity/authorization, asynchronous operations, durable PostgreSQL/outbox, and
-governance path around the working core.
+The repository now satisfies the code-assessment scope with a working,
+traceable Python flow and an internal human-decision mechanism aligned with the
+evaluator's feedback. Its strongest properties are deterministic financial
+authority, exact money, explicit high-value/age semantics, managed original
+evidence, durable retry behavior, role-aware human judgment, and honest
+implemented-versus-production boundaries.
+
+It should be presented as a complete assessment and demonstrable AWS sandbox,
+not as a production RecargaPay financial platform or a proven million-request
+deployment.
