@@ -35,10 +35,16 @@ jobs:
         run: uv sync --frozen --group dev
 
       - name: Run tests
-        run: uv run --frozen pytest
+        run: uv run --frozen pytest -W error
 
       - name: Run Ruff
         run: uv run --frozen ruff check src tests
+
+      - name: Validate browser JavaScript
+        run: find src/expense_agent/presentation/static -name '*.js' -print0 | xargs -0 -n1 node --check
+
+      - name: Reject whitespace errors
+        run: git diff --check
 
       - name: Build distributions
         run: uv build
