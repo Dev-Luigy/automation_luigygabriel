@@ -48,6 +48,7 @@ def test_review_console_has_bounded_server_side_discovery_controls() -> None:
 
     assert 'name="category" type="text"' in html
     assert 'value="client_meal"' in html
+    assert 'value="transportation"' in html
     assert 'name="problem_code" type="text"' in html
     assert "cursorHistory.push(state.cursor)" in javascript
     assert "state.cursorHistory.pop()" in javascript
@@ -93,6 +94,9 @@ def test_review_console_preserves_evidence_and_uses_safe_browser_state() -> None
     assert "rule.message" in javascript
     assert 'if (value !== null && value !== undefined) node.textContent = value;' in javascript
     assert "body?.detail" not in javascript
+    assert "new URL(path, window.location.origin)" in javascript
+    assert "target.origin !== window.location.origin" in javascript
+    assert 'credentials: "same-origin"' in javascript
     assert 'data-i18n="originalLanguage"' in html
     assert 'data-i18n="attachmentLimitation"' in html
     assert 'attachment?.kind === "managed_evidence"' in javascript

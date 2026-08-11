@@ -37,9 +37,13 @@ def test_submitter_portal_has_one_original_and_no_editable_identity() -> None:
     assert 'id="submitted-by"' in html
     assert 'name="submitted_by"' not in html
     assert 'id="raw-ocr-text"' in html
+    assert '<option value="transportation" data-i18n="categoryTransport">' in html
+    assert '<option value="transport"' not in html
     assert 'data-i18n="ocrAssessmentInput"' in html
     assert 'data-i18n="ocrAssessmentHelp"' in html
     assert 'id="tracking-request-id"' in html
+    assert "randomHex(32)" in _asset("submit.js")
+    assert "REQ-20260811-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" in html
     assert 'pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"' in html
 
 
@@ -111,6 +115,9 @@ def test_submitter_portal_has_trilingual_catalog_parity() -> None:
     assert '<option value="es">' in html
     assert "navigator.languages" in javascript
     assert "document.documentElement.lang = state.language" in javascript
+    assert "function renderIdentity()" in javascript
+    assert "renderIdentity();" in javascript
+    assert 'elements["identity-name"].textContent = state.principal.displayName' in javascript
 
 
 def test_submitter_portal_renders_api_values_as_bounded_text() -> None:

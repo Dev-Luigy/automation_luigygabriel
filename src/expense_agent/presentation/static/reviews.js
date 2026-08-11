@@ -772,6 +772,7 @@ const categoryTranslationKeys = {
   client_meal: "categoryClientMeal",
   meals: "categoryMeals",
   lodging: "categoryLodging",
+  transportation: "categoryTransport",
   transport: "categoryTransport",
   office_supplies: "categoryOfficeSupplies",
   other: "categoryOther",
@@ -1037,7 +1038,9 @@ class ApiError extends Error {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const target = new URL(path, window.location.origin);
+  if (target.origin !== window.location.origin) throw new Error("Cross-origin request blocked");
+  const response = await fetch(target, {
     credentials: "same-origin",
     cache: "no-store",
     ...options,

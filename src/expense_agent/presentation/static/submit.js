@@ -79,7 +79,7 @@ const translations = {
     trackerEyebrow: "Already submitted?",
     trackerTitle: "Track any request by exact ID",
     trackerDescription: "This direct lookup searches the authorized database across pending, approved, and rejected states.",
-    requestIdPlaceholder: "REQ-20260811-XXXXXXXX",
+    requestIdPlaceholder: "REQ-20260811-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     findRequest: "Find request",
     findingRequest: "Finding request…",
     requestNotFound: "No authorized request was found with that exact ID.",
@@ -209,7 +209,7 @@ const translations = {
     trackerEyebrow: "Já enviou?",
     trackerTitle: "Acompanhe qualquer solicitação pelo ID exato",
     trackerDescription: "A consulta direta pesquisa a base autorizada nos estados pendente, aprovado e rejeitado.",
-    requestIdPlaceholder: "REQ-20260811-XXXXXXXX",
+    requestIdPlaceholder: "REQ-20260811-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     findRequest: "Buscar solicitação",
     findingRequest: "Buscando solicitação…",
     requestNotFound: "Nenhuma solicitação autorizada foi encontrada com esse ID exato.",
@@ -339,7 +339,7 @@ const translations = {
     trackerEyebrow: "¿Ya la enviaste?",
     trackerTitle: "Sigue cualquier solicitud por su ID exacto",
     trackerDescription: "La consulta directa busca en la base autorizada entre estados pendientes, aprobados y rechazados.",
-    requestIdPlaceholder: "REQ-20260811-XXXXXXXX",
+    requestIdPlaceholder: "REQ-20260811-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
     findRequest: "Buscar solicitud",
     findingRequest: "Buscando solicitud…",
     requestNotFound: "No se encontró una solicitud autorizada con ese ID exacto.",
@@ -442,6 +442,7 @@ const categoryKeys = Object.freeze({
   meals: "categoryMeals",
   client_meal: "categoryClientMeal",
   lodging: "categoryLodging",
+  transportation: "categoryTransport",
   transport: "categoryTransport",
   office_supplies: "categoryOfficeSupplies",
   other: "categoryOther",
@@ -545,7 +546,7 @@ function applyTranslations() {
   for (const node of document.querySelectorAll("[data-i18n-aria-label]")) {
     node.setAttribute("aria-label", t(node.dataset.i18nAriaLabel));
   }
-  renderIdentityRoles();
+  renderIdentity();
   renderSelectedFile();
   if (state.sessionErrorKey) {
     elements["session-error-message"].textContent = t(state.sessionErrorKey);
@@ -651,6 +652,14 @@ function renderIdentityRoles() {
   }
 }
 
+function renderIdentity() {
+  renderIdentityRoles();
+  if (!state.principal) return;
+  elements["identity-name"].textContent = state.principal.displayName;
+  elements["identity-avatar"].textContent = initials(state.principal.displayName);
+  elements["submitted-by"].textContent = state.principal.email;
+}
+
 function showSessionError(messageKey) {
   state.sessionErrorKey = messageKey;
   elements["session-loading"].hidden = true;
@@ -682,10 +691,7 @@ async function loadSession() {
       displayName: safeText(principal.display_name || principal.email, 160),
     };
     state.csrfToken = body.csrf_token;
-    elements["identity-name"].textContent = state.principal.displayName;
-    elements["identity-avatar"].textContent = initials(state.principal.displayName);
-    elements["submitted-by"].textContent = state.principal.email;
-    renderIdentityRoles();
+    renderIdentity();
     elements["session-loading"].hidden = true;
     elements["portal-content"].hidden = false;
     if (!elements["request-id"].value) generateRequestId();
@@ -705,7 +711,7 @@ function randomHex(length) {
 
 function generateRequestId() {
   const day = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  elements["request-id"].value = `REQ-${day}-${randomHex(8)}`;
+  elements["request-id"].value = `REQ-${day}-${randomHex(32)}`;
   elements["request-id"].setCustomValidity("");
   state.submittedAt = null;
 }
