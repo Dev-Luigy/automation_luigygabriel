@@ -7,8 +7,9 @@ import hashlib
 import hmac
 import json
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 
 PBKDF2_ALGORITHM = "pbkdf2_sha256"
 PBKDF2_ITERATIONS = 600_000
@@ -19,6 +20,38 @@ class SecurityConfigurationError(ValueError):
     """Raised when security configuration is missing or malformed."""
 
 
+class PrincipalRole(str, Enum):
+    """Closed assessment role vocabulary supplied by trusted configuration."""
+
+    SUBMITTER = "submitter"
+    REVIEWER = "reviewer"
+    AUDITOR = "auditor"
+    ADMIN = "admin"
+
+
+class PrincipalCapability(str, Enum):
+    """Closed action vocabulary used by assessment authorization checks."""
+
+    SUBMIT = "submit"
+    REVIEW = "review"
+    AUDIT = "audit"
+    ADMIN = "admin"
+
+
+_ROLE_CAPABILITIES = {
+    PrincipalRole.SUBMITTER: frozenset({PrincipalCapability.SUBMIT}),
+    PrincipalRole.REVIEWER: frozenset({PrincipalCapability.REVIEW}),
+    PrincipalRole.AUDITOR: frozenset({PrincipalCapability.AUDIT}),
+    PrincipalRole.ADMIN: frozenset(PrincipalCapability),
+}
+
+
+def _legacy_roles() -> frozenset[PrincipalRole]:
+    # Before roles were configurable, each assessment account could use both
+    # intake and review endpoints. Preserve that executable behavior.
+    return frozenset({PrincipalRole.SUBMITTER, PrincipalRole.REVIEWER})
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewerPrincipal:
     """Canonical identity established by an authentication adapter."""
@@ -26,6 +59,28 @@ class ReviewerPrincipal:
     reviewer_id: str
     email: str
     display_name: str
+    roles: frozenset[PrincipalRole] = field(default_factory=_legacy_roles)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "roles", _normalize_roles(self.roles))
+
+    def has_role(self, role: PrincipalRole | str) -> bool:
+        """Return exact role membership; administrator is not an identity alias."""
+
+        try:
+            normalized = PrincipalRole(role)
+        except (TypeError, ValueError):
+            return False
+        return normalized in self.roles
+
+    def can(self, capability: PrincipalCapability | str) -> bool:
+        """Return whether any configured role grants a closed assessment action."""
+
+        try:
+            normalized = PrincipalCapability(capability)
+        except (TypeError, ValueError):
+            return False
+        return any(normalized in _ROLE_CAPABILITIES[role] for role in self.roles)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +89,11 @@ class ReviewerCredential:
     reviewer_id: str
     email: str
     display_name: str
-    password_hash: str
+    password_hash: str = field(repr=False)
+    roles: frozenset[PrincipalRole] = field(default_factory=_legacy_roles)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "roles", _normalize_roles(self.roles))
 
     @property
     def principal(self) -> ReviewerPrincipal:
@@ -42,6 +101,7 @@ class ReviewerCredential:
             reviewer_id=self.reviewer_id,
             email=self.email,
             display_name=self.display_name,
+            roles=self.roles,
         )
 
 
@@ -137,6 +197,7 @@ class BasicAuthenticator:
                 email=email,
                 display_name=display_name,
                 password_hash=password_hash,
+                roles=credential.roles,
             )
             reviewer_ids.add(reviewer_id)
         self._credentials = by_username
@@ -157,24 +218,76 @@ def load_reviewer_credentials(raw_json: str) -> tuple[ReviewerCredential, ...]:
     """Parse a strict reviewer list supplied by a secret/configuration provider."""
 
     try:
-        decoded = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
+        decoded = json.loads(raw_json, object_pairs_hook=_unique_json_object)
+    except (json.JSONDecodeError, ValueError) as exc:
         raise SecurityConfigurationError("reviewer JSON is invalid") from exc
     if not isinstance(decoded, list):
         raise SecurityConfigurationError("reviewer JSON must be a list")
 
     required = {"username", "reviewer_id", "email", "display_name", "password_hash"}
+    with_roles = required | {"roles"}
     credentials: list[ReviewerCredential] = []
     for item in decoded:
-        if not isinstance(item, dict) or set(item) != required:
+        item_keys = frozenset(item) if isinstance(item, dict) else frozenset()
+        if not isinstance(item, dict) or item_keys not in {
+            frozenset(required),
+            frozenset(with_roles),
+        }:
             raise SecurityConfigurationError(
                 "each reviewer must contain exactly username, reviewer_id, email, "
-                "display_name, and password_hash"
+                "display_name, password_hash, and optional roles"
             )
         if not all(isinstance(item[key], str) for key in required):
             raise SecurityConfigurationError("all reviewer fields must be strings")
-        credentials.append(ReviewerCredential(**item))
+        roles = _legacy_roles()
+        if "roles" in item:
+            raw_roles = item["roles"]
+            if not isinstance(raw_roles, list):
+                raise SecurityConfigurationError("reviewer roles must be a JSON list")
+            roles = _normalize_roles(raw_roles)
+        credentials.append(
+            ReviewerCredential(
+                username=item["username"],
+                reviewer_id=item["reviewer_id"],
+                email=item["email"],
+                display_name=item["display_name"],
+                password_hash=item["password_hash"],
+                roles=roles,
+            )
+        )
     return tuple(credentials)
+
+
+def _normalize_roles(raw_roles: object) -> frozenset[PrincipalRole]:
+    if isinstance(raw_roles, (str, bytes)) or not isinstance(
+        raw_roles,
+        (list, tuple, set, frozenset),
+    ):
+        raise SecurityConfigurationError("reviewer roles must be a collection")
+    if not raw_roles:
+        raise SecurityConfigurationError("reviewer roles must not be empty")
+
+    normalized: set[PrincipalRole] = set()
+    for raw_role in raw_roles:
+        if not isinstance(raw_role, str):
+            raise SecurityConfigurationError("reviewer roles must contain only strings")
+        try:
+            role = PrincipalRole(raw_role)
+        except ValueError as exc:
+            raise SecurityConfigurationError("reviewer roles contain an unknown role") from exc
+        if role in normalized:
+            raise SecurityConfigurationError("reviewer roles must not contain duplicates")
+        normalized.add(role)
+    return frozenset(normalized)
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
 
 
 class CsrfProtector:
