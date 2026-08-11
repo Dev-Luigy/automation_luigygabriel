@@ -882,18 +882,19 @@ report, and time log.
 **Status:** Superseded by J-025 for the deployment artifact. This entry records
 the implementation boundary before the sandbox was built.
 
-**Question:** How should the user's approximately 10-hour estimate and request
-for diagrams and deployment follow-up be recorded without overstating measured
-time or implying an AWS implementation decision?
+**Question:** How should the user's effort estimate and request for diagrams
+and deployment follow-up be recorded without overstating measured time or
+implying an AWS implementation decision?
 
-**User input:** The user reports approximately 10 hours total across the
-project and requested a central view of the diagrams together with deployment
-and sandbox follow-up.
+**User input:** The user supplied a rough point estimate for the whole project
+and requested a central view of the diagrams together with deployment and
+sandbox follow-up. That estimate was later refined to the 8–12-hour range in
+J-028.
 
-**Recording decision:** Treat approximately 10 hours as a rough, user-reported
-total. The exactly measured `40m 29s` completion block is contained within that
-estimate and must not be added again. Historical activities remain individually
-unmeasured rather than receiving reconstructed durations.
+**Recording decision:** Treat the total as user-reported rather than derived
+from Git. The exactly measured `40m 29s` completion block is contained within
+the current 8–12-hour range and must not be added again. Historical activities
+remain individually unmeasured rather than receiving reconstructed durations.
 
 **Documentation action at that point:** Add a central, English diagram gallery
 that consolidates the implemented assessment, lifecycle, summarized data model,
@@ -916,9 +917,10 @@ authority, prerequisites, and review. D-026 and D-042 remain unchanged.
 repository be made easy to run on Amazon without presenting SQLite/Basic as the
 financial-production architecture?
 
-**User direction:** Record approximately 10 hours as the rough project total,
-provide AWS installation instructions, make the result as plug and play as
-possible, and include the remaining diagrams.
+**User direction:** Record a rough project-effort estimate, provide AWS
+installation instructions, make the result as plug and play as possible, and
+include the remaining diagrams. J-028 records the later refinement to 8–12
+hours.
 
 **Options examined:** A faithful single EC2/EBS sandbox would keep SQLite on
 local block storage but would diverge from the selected serverless direction
@@ -1011,8 +1013,8 @@ uploader ownership, managed identity and richer ABAC, asynchronous
 backpressure/watchdog/DLQ, PostgreSQL/outbox/WORM export, audit search/export,
 load/accuracy/security/restore tests, and accountable approvals.
 
-**Time reporting:** Keep the user's approximately 10-hour total. This entry
-does not reconstruct missing per-activity durations or alter historical commit
+**Time reporting:** Keep the user's reported 8–12-hour range. This entry does
+not reconstruct missing per-activity durations or alter historical commit
 timestamps.
 
 **Evidence affected:** Policy, workflow and review services, SQLite schema,
@@ -1067,8 +1069,22 @@ warnings treated as errors, plus Ruff, JavaScript syntax, diff checks, package
 build, SAM lint, ShellCheck, a containerized x86_64 SAM build, and import from
 the matching Lambda Python 3.12 runtime image. No AWS resource was provisioned.
 
-**Time reporting:** These fixes remain inside the user's approximate 10-hour
-total; no per-step duration or commit timestamp was fabricated.
+**Time reporting:** These fixes remain inside the user's reported 8–12-hour
+range; no per-step duration or commit timestamp was fabricated.
+
+## 2026-08-11 - J-028 - Project effort range refinement
+
+**Question:** What total effort should the final delivery report communicate?
+
+**User direction:** Report that the project took between 8 and 12 hours.
+
+**Recording decision:** The 8–12-hour range supersedes the earlier point
+estimate in active documentation. The independently measured `40m 29s` block
+remains a subset of that range, not an additional duration. No historical start
+or finish time is reconstructed.
+
+**Affected records:** A-054, A-070, `docs/time-log.md`, `docs/final-report.md`,
+and the documentation index.
 
 ## Entry template
 

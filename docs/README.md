@@ -45,7 +45,7 @@ flowchart LR
 | [Decision log](decision-log.md) | Current, proposed, open, and superseded architecture decisions. |
 | [Project journal](project-journal.md) | Chronological questions, feedback, implementation results, and rationale. |
 | [Assumptions register](assumptions.md) | Explicit interpretations and validation needs. |
-| [Time log](time-log.md) | User-reported total effort, the precisely measured subset inside it, and honestly unmeasured historical rows. |
+| [Time log](time-log.md) | User-reported 8–12-hour effort range, the precisely measured subset inside it, and honestly unmeasured historical rows. |
 | [Report outline](final-report-outline.md) | Earlier planning artifact retained for history; superseded by the final report. |
 
 ## Current implementation status

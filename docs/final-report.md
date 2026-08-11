@@ -342,7 +342,7 @@ accuracy study, penetration test, or disaster-recovery test is claimed.
 
 ## Time invested
 
-The user reports approximately **10 hours total**. Historical activities were
+The user reports **between 8 and 12 hours total**. Historical activities were
 not reconstructed into invented per-task durations. The record in
 [time-log.md](time-log.md) preserves known milestones and marks unknown values
 as `estimate required`.

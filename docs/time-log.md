@@ -1,14 +1,13 @@
 # Time log
 
 The assignment asks for a rough estimate of time invested. The user reports
-approximately **10 hours total** across the project. This is a rough,
-self-reported project total rather than a reconstruction from Git history.
+**between 8 and 12 hours total** across the project. This is a self-reported
+range rather than a reconstruction from Git history.
 
 The precisely measured `40m 29s` final completion block below is a subset of
-that approximately 10-hour total. It must not be added again: the reporting
-total is approximately 10 hours, not 10 hours and 40 minutes. Earlier work was
-not timed precisely, so individual historical rows remain labeled `estimate
-required` instead of receiving fabricated durations.
+that 8–12-hour range and must not be added again. Earlier work was not timed
+precisely, so individual historical rows remain labeled `estimate required`
+instead of receiving fabricated durations.
 
 | Date | Work area | Started | Finished | Duration | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -34,8 +33,8 @@ required` instead of receiving fabricated durations.
 | 2026-08-10 | Serverless confirmation and completion audit | not recorded | not recorded | estimate required | Closed Kubernetes as a current option, reaffirmed D-026 in D-042/J-021, compared the executable with the complete assignment, and recorded the remaining engineering and user-delivery inputs in J-022/A-048. |
 | 2026-08-10 | End-to-end assessment completion and final documentation | 16:47:09 -03 | 17:27:38 -03 | 40m 29s | Real continuous window (`2026-08-10T19:47:09Z`–`2026-08-10T20:27:38Z`): policy/extractors, acceptance/CI, workflow persistence, intake/results, hardening, documentation, and then-current 140-test/Ruff/JavaScript/diff/build verification. No Git timestamps or earlier durations were fabricated. |
 | 2026-08-11 | AWS assessment sandbox packaging and diagram consolidation | not recorded | not recorded | estimate required | Added Mangum, Python 3.12 Lambda packaging, SAM API/VPC/EFS/log/alarm IaC, one-command deployment and HTTPS seed scripts, the central diagram gallery, and updated boundaries. Final evidence reached 151 tests plus SAM lint/build/runtime import and ShellCheck. No AWS resource was provisioned. |
-| 2026-08-11 | Final compliance audit and safety closure | not recorded | not recorded | estimate required | Added policy v3 high-value constraints, managed original evidence, role/owner/self-review authorization, all-HTTP operational audit, expired-lease recovery, idempotent human commands, standalone trilingual submit/track UX, managed-only public intake, and synchronized documentation. This remains inside the user's approximate total; no historical duration was invented. |
-| 2026-08-11 | Final traceability, evidence, browser, and AWS cold-start audit | not recorded | not recorded | estimate required | Added actor-bound application-layer four-eyes, decision-time original revalidation, build/config identity, 128-bit request IDs, canonical categories, bounded paths, distinct AWS seed actor, explicit EFS access-point UID trust, final browser QA, duplicate-receipt target control, and synchronized D-057–D-062/J-027/A-064–A-069. Final evidence: 254 tests, Ruff, JS/shell/diff/package/docs checks, SAM lint, container build, and Lambda-runtime import. Included in the approximate total; no duration or timestamp was invented. |
+| 2026-08-11 | Final compliance audit and safety closure | not recorded | not recorded | estimate required | Added policy v3 high-value constraints, managed original evidence, role/owner/self-review authorization, all-HTTP operational audit, expired-lease recovery, idempotent human commands, standalone trilingual submit/track UX, managed-only public intake, and synchronized documentation. This remains inside the user's reported 8–12-hour range; no historical duration was invented. |
+| 2026-08-11 | Final traceability, evidence, browser, and AWS cold-start audit | not recorded | not recorded | estimate required | Added actor-bound application-layer four-eyes, decision-time original revalidation, build/config identity, 128-bit request IDs, canonical categories, bounded paths, distinct AWS seed actor, explicit EFS access-point UID trust, final browser QA, duplicate-receipt target control, and synchronized D-057–D-062/J-027/A-064–A-069. Final evidence: 254 tests, Ruff, JS/shell/diff/package/docs checks, SAM lint, container build, and Lambda-runtime import. Included in the reported 8–12-hour range; no duration or timestamp was invented. |
 
 ## Entry template
 
@@ -47,7 +46,7 @@ required` instead of receiving fabricated durations.
 
 | Category | Reporting value |
 | --- | ---: |
-| User-reported total project effort | approximately 10h |
+| User-reported total project effort | between 8h and 12h |
 | Precisely measured completion subset included in that total | 40m 29s |
 | Historical remainder | not independently measured; individual rows remain `estimate required` |
-| **Reporting total** | **approximately 10h, not 10h 40m 29s** |
+| **Reporting total** | **8–12h; the measured subset is included, not additional** |
