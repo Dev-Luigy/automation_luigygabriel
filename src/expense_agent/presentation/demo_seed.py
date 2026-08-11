@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
+from pathlib import Path
 
 from expense_agent.application.review import ReviewConflictError, ReviewProblem
 from expense_agent.domain.decisions import (
@@ -26,7 +28,10 @@ from expense_agent.domain.reimbursement import (
     ReimbursementSubmission,
 )
 from expense_agent.domain.value_objects import Currency, Money
+from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 from expense_agent.infrastructure.review.persistence import SqliteReviewRepository
+
+_SYNTHETIC_PDF = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
 
 
 def _build_case(
@@ -40,6 +45,7 @@ def _build_case(
     problem_code: str,
     problem_message: str,
     offset_minutes: int,
+    attachment_location: str | None = None,
 ) -> tuple[ReimbursementCase, ExtractionResult, tuple[ReviewProblem, ...]]:
     now = datetime.now(UTC).replace(microsecond=0) - timedelta(minutes=offset_minutes)
     receipt_date = now.date()
@@ -55,7 +61,12 @@ def _build_case(
         raw_ocr_text=raw_ocr,
         claimed_category=category,
         claimed_amount=Money(Decimal(amount), Currency.BRL),
-        attachments=(AttachmentReference(location=f"object://receipts/{request_id}/receipt.jpg"),),
+        attachments=(
+            AttachmentReference(
+                location=attachment_location
+                or f"object://receipts/{request_id}/receipt.jpg"
+            ),
+        ),
     )
     extraction = ExtractionResult(
         request_id=request_id,
@@ -123,31 +134,55 @@ def run() -> None:
         "./data/expense-agent.sqlite3",
     )
     repository = SqliteReviewRepository(path)
-    fixtures = (
-        _build_case(
-            request_id="RMB-2026-00041",
-            submitted_by="ana.silva@example.com",
-            amount="186.40",
-            extracted_amount="168.40",
-            category="client_meal",
-            merchant="Bistrô Central",
-            problem_code="AMOUNT_MISMATCH",
-            problem_message="Claimed amount differs from the receipt total by BRL 18.00.",
-            offset_minutes=47,
-        ),
-        _build_case(
-            request_id="RMB-2026-00042",
-            submitted_by="marcos.lima@example.com",
-            amount="742.00",
-            extracted_amount="742.00",
-            category="lodging",
-            merchant="Hotel Horizonte",
-            problem_code="POLICY_LIMIT_EVIDENCE",
-            problem_message="The lodging claim requires a project cost-center confirmation.",
-            offset_minutes=19,
-        ),
+    attachment_root = Path(
+        os.environ.get(
+            "EXPENSE_AGENT_ATTACHMENT_ROOT",
+            str(Path(path).parent / "attachments"),
+        )
     )
-    for case, extraction, problems in fixtures:
+    attachment_store = FileSystemAttachmentStore(attachment_root)
+    fixture_arguments = (
+        {
+            "request_id": "RMB-2026-00041",
+            "submitted_by": "ana.silva@example.com",
+            "amount": "186.40",
+            "extracted_amount": "168.40",
+            "category": "client_meal",
+            "merchant": "Bistrô Central",
+            "problem_code": "AMOUNT_MISMATCH",
+            "problem_message": (
+                "Claimed amount differs from the receipt total by BRL 18.00."
+            ),
+            "offset_minutes": 47,
+        },
+        {
+            "request_id": "RMB-2026-00042",
+            "submitted_by": "marcos.lima@example.com",
+            "amount": "742.00",
+            "extracted_amount": "742.00",
+            "category": "lodging",
+            "merchant": "Hotel Horizonte",
+            "problem_code": "POLICY_LIMIT_EVIDENCE",
+            "problem_message": (
+                "The lodging claim requires a project cost-center confirmation."
+            ),
+            "offset_minutes": 19,
+        },
+    )
+    for arguments in fixture_arguments:
+        request_id = arguments["request_id"]
+        if repository.get(request_id) is not None:
+            print(f"Demo case {request_id} already exists; kept existing record")
+            continue
+        attachment = attachment_store.store(
+            BytesIO(_SYNTHETIC_PDF),
+            original_filename=f"{request_id}-synthetic-receipt.pdf",
+            declared_media_type="application/pdf",
+        )
+        case, extraction, problems = _build_case(
+            **arguments,
+            attachment_location=f"evidence:{attachment.attachment_id.value}",
+        )
         try:
             repository.add_pending_case(case, extraction=extraction, problems=problems)
             print(f"Created demo case {case.request_id}")

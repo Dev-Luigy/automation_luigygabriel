@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Protocol
 from uuid import uuid4
 
+from expense_agent.application.execution_identity import ExecutionIdentity
 from expense_agent.application.operational_audit import OperationalAuditRecorder
 from expense_agent.domain._validation import require_aware_datetime, require_non_blank
 from expense_agent.domain.audit import AuditActor, AuditEvent
@@ -37,6 +38,10 @@ class ReviewConflictError(RuntimeError):
 
 class ReviewPreconditionError(ReviewConflictError):
     """Raised when a review command is based on a stale case representation."""
+
+
+class ReviewAuthorizationError(PermissionError):
+    """Raised when separation of duties cannot authorize a human decision."""
 
 
 class ReviewCaseStatus(str, Enum):
@@ -513,11 +518,17 @@ class ReviewService:
         clock: Callable[[], datetime] | None = None,
         decision_id_factory: Callable[[], str] | None = None,
         event_id_factory: Callable[[], str] | None = None,
+        execution_identity: ExecutionIdentity | None = None,
     ) -> None:
         self._repository = repository
         self._clock = clock or (lambda: datetime.now(UTC))
         self._decision_id_factory = decision_id_factory or (lambda: uuid4().hex)
         self._event_id_factory = event_id_factory or (lambda: uuid4().hex)
+        self._execution_identity = execution_identity or ExecutionIdentity()
+        if not isinstance(self._execution_identity, ExecutionIdentity):
+            raise DomainValidationError(
+                "execution_identity must be an ExecutionIdentity"
+            )
 
     @property
     def operational_audit_recorder(self) -> OperationalAuditRecorder | None:
@@ -573,6 +584,7 @@ class ReviewService:
         expected_version: int,
         correlation_id: str,
         idempotency_key: str,
+        evidence_integrity: str,
     ) -> ReviewDecisionResult:
         """Apply domain rules, then atomically commit the decision and audit fact."""
 
@@ -591,6 +603,26 @@ class ReviewService:
         normalized_reason = require_non_blank(reason, "reason")
         if len(normalized_reason) > 2_000:
             raise DomainValidationError("reason must contain at most 2000 characters")
+        normalized_evidence_integrity = require_non_blank(
+            evidence_integrity,
+            "evidence_integrity",
+        )
+        if normalized_evidence_integrity not in {
+            "verified",
+            "missing",
+            "failed",
+            "unverifiable",
+            "invalid_reference",
+            "not_verified",
+        }:
+            raise DomainValidationError("evidence_integrity is not a supported state")
+        if (
+            outcome is ReviewOutcome.APPROVED
+            and normalized_evidence_integrity != "verified"
+        ):
+            raise DomainValidationError(
+                "human approval requires verified original evidence"
+            )
 
         key_hash = decision_idempotency_key_hash(idempotency_key)
         command_fingerprint = review_decision_command_fingerprint(
@@ -625,6 +657,17 @@ class ReviewService:
             raise ReviewPreconditionError(
                 "review case is no longer pending at the expected version"
             )
+        if details.submission_actor_id is None:
+            raise ReviewAuthorizationError(
+                "submission actor is unavailable; separation of duties cannot be verified"
+            )
+        if (
+            details.submission_actor_id == reviewer.reviewer_id
+            or details.submission.submitted_by.casefold() == reviewer.email.casefold()
+        ):
+            raise ReviewAuthorizationError(
+                "a submitter cannot decide their own reimbursement"
+            )
 
         decided_at = self._clock()
         decision = HumanDecision(
@@ -654,7 +697,10 @@ class ReviewService:
             actor=AuditActor(actor_type="reviewer", actor_id=reviewer.reviewer_id),
             correlation_id=normalized_correlation_id,
             payload={
+                "build_id": self._execution_identity.build_id,
+                "configuration_hash": self._execution_identity.configuration_hash,
                 "decision_id": decision.decision_id,
+                "evidence_integrity": normalized_evidence_integrity,
                 "from_status": ReimbursementStatus.PENDING_REVIEW.value,
                 "outcome": decision.outcome.value,
                 "reason": decision.reason,

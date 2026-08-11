@@ -200,6 +200,7 @@ def test_decision_status_and_audit_commit_atomically(tmp_path) -> None:
         expected_version=1,
         correlation_id="corr-2001",
         idempotency_key="decision-key-2001",
+        evidence_integrity="verified",
     )
 
     assert result.version == 2
@@ -270,6 +271,7 @@ def test_repeated_identical_decision_replays_original_without_duplicate_records(
         "expected_version": 1,
         "correlation_id": "corr-1",
         "idempotency_key": "decision-key-repeat",
+        "evidence_integrity": "verified",
     }
     first = service.decide(**arguments)
     replay = service.decide(**arguments)
@@ -323,6 +325,7 @@ def test_two_concurrent_reviewers_produce_exactly_one_terminal_decision(tmp_path
                 expected_version=1,
                 correlation_id=f"corr-{suffix}",
                 idempotency_key=f"decision-key-{suffix}",
+                evidence_integrity="verified",
             )
         except ReviewConflictError:
             return "conflict"
@@ -369,6 +372,7 @@ def test_two_concurrent_identical_commands_commit_once_and_replay_once(tmp_path)
             expected_version=1,
             correlation_id=f"corr-{suffix}",
             idempotency_key="decision-key-concurrent-same",
+            evidence_integrity="verified",
         )
 
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -399,6 +403,7 @@ def test_idempotency_key_cannot_be_rebound_to_any_command_field(tmp_path) -> Non
         "expected_version": 1,
         "correlation_id": "corr-bound",
         "idempotency_key": "decision-key-bound",
+        "evidence_integrity": "verified",
     }
     service.decide(**base)
 
@@ -444,6 +449,7 @@ def test_late_audit_failure_rolls_back_decision_and_status(tmp_path) -> None:
         expected_version=1,
         correlation_id="corr-first",
         idempotency_key="decision-key-first",
+        evidence_integrity="verified",
     )
 
     with pytest.raises(ReviewConflictError, match="immutable record"):
@@ -455,6 +461,7 @@ def test_late_audit_failure_rolls_back_decision_and_status(tmp_path) -> None:
             expected_version=1,
             correlation_id="corr-second",
             idempotency_key="decision-key-second",
+            evidence_integrity="verified",
         )
 
     second_details = repository.get("REQ-second")
@@ -477,6 +484,7 @@ def test_human_decisions_and_audit_events_are_database_immutable(tmp_path) -> No
         expected_version=1,
         correlation_id="corr-1",
         idempotency_key="decision-key-immutable",
+        evidence_integrity="verified",
     )
 
     statements = (

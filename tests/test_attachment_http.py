@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from expense_agent.application import ReviewService
+from expense_agent.application import ExecutionIdentity, ReviewService
 from expense_agent.domain.reimbursement import AttachmentReference, ReimbursementSubmission
 from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 from expense_agent.infrastructure.review import SqliteReviewRepository
@@ -265,7 +265,9 @@ def test_managed_evidence_is_projected_and_downloaded_only_through_its_case(
     assert json.loads(successful_download[5]) == {
         "access_control": "granted",
         "attachment_id": attachment_id,
+        "build_id": "local-unversioned",
         "byte_size": len(PDF_BYTES),
+        "configuration_hash": ExecutionIdentity().configuration_hash,
         "correlation_source": "generated",
         "media_type": "application/pdf",
         "sha256": upload_payload["sha256"],

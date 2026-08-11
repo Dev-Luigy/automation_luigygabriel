@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Protocol
 from uuid import uuid4
 
+from expense_agent.application.execution_identity import ExecutionIdentity
 from expense_agent.application.extraction import ReceiptExtractor
 from expense_agent.application.review import ReviewCaseStatus, ReviewerIdentity, ReviewProblem
 from expense_agent.domain import (
@@ -410,6 +411,7 @@ class ProcessingService:
         decision_id_factory: Callable[[], str] | None = None,
         event_id_factory: Callable[[], str] | None = None,
         processing_lease: timedelta = timedelta(minutes=5),
+        execution_identity: ExecutionIdentity | None = None,
     ) -> None:
         self._repository = repository
         self._extractor = extractor
@@ -419,6 +421,14 @@ class ProcessingService:
         self._invocation_id_factory = invocation_id_factory or (lambda: uuid4().hex)
         self._decision_id_factory = decision_id_factory or (lambda: uuid4().hex)
         self._event_id_factory = event_id_factory or (lambda: uuid4().hex)
+        self._execution_identity = execution_identity or ExecutionIdentity()
+        if not isinstance(self._execution_identity, ExecutionIdentity):
+            raise DomainValidationError(
+                "execution_identity must be an ExecutionIdentity"
+            )
+        self._pipeline_version = self._execution_identity.pipeline_version(
+            self._policy.policy_version
+        )
         if not isinstance(processing_lease, timedelta) or processing_lease <= timedelta(0):
             raise DomainValidationError("processing_lease must be a positive timedelta")
         self._processing_lease = processing_lease
@@ -450,6 +460,8 @@ class ProcessingService:
                 correlation_id=normalized_correlation_id,
                 payload={
                     "attachment_count": len(submission.attachments),
+                    "build_id": self._execution_identity.build_id,
+                    "configuration_hash": self._execution_identity.configuration_hash,
                     "request_version": 1,
                     "submission_hash": submission_hash,
                     "to_status": ReimbursementStatus.RECEIVED.value,
@@ -470,7 +482,7 @@ class ProcessingService:
         claim = self._repository.claim_processing(
             request_id=submission.request_id,
             processing_run_id=proposed_processing_run_id,
-            pipeline_version=self._policy.policy_version,
+            pipeline_version=self._pipeline_version,
             input_hash=input_hash,
             expected_version=registered.version,
             started_at=started_at,
@@ -484,8 +496,10 @@ class ProcessingService:
                 actor=AuditActor(actor_type="system", actor_id="processing-orchestrator"),
                 correlation_id=normalized_correlation_id,
                 payload={
+                    "build_id": self._execution_identity.build_id,
+                    "configuration_hash": self._execution_identity.configuration_hash,
                     "from_status": registered.status.value,
-                    "pipeline_version": self._policy.policy_version,
+                    "pipeline_version": self._pipeline_version,
                     "processing_run_id": proposed_processing_run_id,
                     "request_version": registered.version,
                     "result_version": registered.version + 1,

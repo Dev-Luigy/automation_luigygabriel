@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -12,6 +13,8 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
+from expense_agent.application import ExecutionIdentity
+from expense_agent.domain.exceptions import DomainValidationError
 from expense_agent.presentation.security import (
     ReviewerCredential,
     SecurityConfigurationError,
@@ -159,6 +162,70 @@ class ReviewWebSettings:
     http_json_extractor_settings: HttpJsonExtractorSettings | None
     attachment_root: Path
     attachment_max_bytes: int
+    build_id: str
+
+    @property
+    def configuration_hash(self) -> str:
+        """Hash the complete effective configuration without persisting its secrets."""
+
+        extractor = self.http_json_extractor_settings
+        extractor_payload = (
+            None
+            if extractor is None
+            else {
+                "endpoint": extractor.endpoint,
+                "provider": extractor.provider,
+                "model": extractor.model,
+                "api_key": extractor.api_key,
+                "timeout_seconds": extractor.timeout_seconds,
+                "max_response_bytes": extractor.max_response_bytes,
+                "parameters": dict(extractor.parameters),
+            }
+        )
+        payload = {
+            "database_path": str(self.database_path),
+            "sqlite_journal_mode": self.sqlite_journal_mode,
+            "reviewers": [
+                {
+                    "username": credential.username,
+                    "reviewer_id": credential.reviewer_id,
+                    "email": credential.email,
+                    "display_name": credential.display_name,
+                    "password_hash": credential.password_hash,
+                    "roles": sorted(role.value for role in credential.roles),
+                }
+                for credential in sorted(self.reviewers, key=lambda item: item.username)
+            ],
+            "csrf_secret": self.csrf_secret,
+            "require_https": self.require_https,
+            "allowed_hosts": list(self.allowed_hosts),
+            "host": self.host,
+            "port": self.port,
+            "forwarded_allow_ips": self.forwarded_allow_ips,
+            "extractor_mode": self.extractor_mode.value,
+            "extractor": extractor_payload,
+            "attachment_root": str(self.attachment_root),
+            "attachment_max_bytes": self.attachment_max_bytes,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @property
+    def execution_identity(self) -> ExecutionIdentity:
+        try:
+            return ExecutionIdentity(
+                build_id=self.build_id,
+                configuration_hash=self.configuration_hash,
+            )
+        except DomainValidationError as exc:
+            raise SecurityConfigurationError(
+                "EXPENSE_AGENT_BUILD_ID is invalid"
+            ) from exc
 
     @classmethod
     def from_environment(cls) -> ReviewWebSettings:
@@ -224,7 +291,7 @@ class ReviewWebSettings:
             raise SecurityConfigurationError(
                 "EXPENSE_AGENT_ATTACHMENT_MAX_BYTES must be between 1024 and 10485760 bytes"
             )
-        return cls(
+        settings = cls(
             database_path=database_path,
             sqlite_journal_mode=sqlite_journal_mode,
             reviewers=load_reviewer_credentials(reviewer_json),
@@ -238,7 +305,13 @@ class ReviewWebSettings:
             http_json_extractor_settings=http_json_extractor_settings,
             attachment_root=attachment_root,
             attachment_max_bytes=attachment_max_bytes,
+            build_id=os.environ.get(
+                "EXPENSE_AGENT_BUILD_ID",
+                "local-unversioned",
+            ).strip(),
         )
+        _execution_identity = settings.execution_identity
+        return settings
 
 
 def _required_environment(name: str) -> str:

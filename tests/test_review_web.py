@@ -1,11 +1,14 @@
+import json
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from expense_agent.application.review import ReviewService
+from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 from expense_agent.infrastructure.review import SqliteReviewRepository
 from expense_agent.presentation.app import create_app
 from expense_agent.presentation.demo_seed import _build_case
@@ -20,6 +23,12 @@ from expense_agent.presentation.security import (
 def _web_client(tmp_path: Path, *, require_https: bool = True) -> tuple[TestClient, Path]:
     database_path = tmp_path / "reviews.sqlite3"
     repository = SqliteReviewRepository(database_path)
+    attachment_store = FileSystemAttachmentStore(tmp_path / "evidence")
+    attachment = attachment_store.store(
+        BytesIO(b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n"),
+        original_filename="receipt.pdf",
+        declared_media_type="application/pdf",
+    )
     case, extraction, problems = _build_case(
         request_id="REQ-WEB-1",
         submitted_by="employee@example.com",
@@ -30,6 +39,7 @@ def _web_client(tmp_path: Path, *, require_https: bool = True) -> tuple[TestClie
         problem_code="TOTAL_MISMATCH",
         problem_message="Claimed and extracted totals differ.",
         offset_minutes=10,
+        attachment_location=f"evidence:{attachment.attachment_id.value}",
     )
     repository.add_pending_case(case, extraction=extraction, problems=problems)
     credential = ReviewerCredential(
@@ -45,6 +55,7 @@ def _web_client(tmp_path: Path, *, require_https: bool = True) -> tuple[TestClie
         csrf=CsrfProtector("test-csrf-secret-that-is-long-enough"),
         require_https=require_https,
         allowed_hosts=("testserver",),
+        attachment_store=attachment_store,
     )
     return TestClient(app, base_url="https://testserver"), database_path
 
@@ -94,7 +105,10 @@ def test_queue_and_detail_expose_required_evidence_with_version_etag(tmp_path) -
     assert details.headers["etag"].endswith('-v1"')
     payload = details.json()
     assert payload["raw_ocr_text"]
-    assert payload["attachments"][0]["location"].endswith("receipt.jpg")
+    assert payload["attachments"][0]["kind"] == "managed_evidence"
+    assert payload["attachments"][0]["open_url"].startswith(
+        "/api/reviews/REQ-WEB-1/attachments/att_"
+    )
     assert payload["extraction"]["facts"]["total"]["amount"] == "89.50"
     assert payload["problems"][0]["code"] == "TOTAL_MISMATCH"
     assert payload["automated_decision"]["rule_evaluations"][0]["outcome"] == "review"
@@ -143,6 +157,85 @@ def test_decision_rejects_missing_csrf_cross_origin_and_stale_version(tmp_path) 
     assert no_csrf.status_code == 403
     assert cross_origin.status_code == 403
     assert stale.status_code == 412
+
+
+def test_decision_fails_closed_when_original_evidence_is_corrupted(tmp_path) -> None:
+    client, _database_path = _web_client(tmp_path)
+    headers, token = _session(client)
+    details = client.get("/api/reviews/REQ-WEB-1", headers=headers)
+    attachment_id = details.json()["attachments"][0]["attachment_id"]
+    blob = tmp_path / "evidence" / "objects" / attachment_id[4:6] / f"{attachment_id}.blob"
+    blob.chmod(0o600)
+    blob.write_bytes(b"corrupted evidence")
+
+    rejected = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers={
+            **headers,
+            "Origin": "https://testserver",
+            "X-CSRF-Token": token,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-corrupt-evidence",
+        },
+        json={"outcome": "approved", "reason": "This must not be committed."},
+    )
+
+    assert rejected.status_code == 409
+    assert "integrity checks" in rejected.json()["detail"]
+    with sqlite3.connect(_database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0] == 0
+
+
+def test_decision_fails_closed_when_original_evidence_is_missing(tmp_path) -> None:
+    client, _database_path = _web_client(tmp_path)
+    headers, token = _session(client)
+    details = client.get("/api/reviews/REQ-WEB-1", headers=headers)
+    attachment_id = details.json()["attachments"][0]["attachment_id"]
+    blob = tmp_path / "evidence" / "objects" / attachment_id[4:6] / f"{attachment_id}.blob"
+    blob.unlink()
+
+    rejected = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers={
+            **headers,
+            "Origin": "https://testserver",
+            "X-CSRF-Token": token,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-missing-evidence",
+        },
+        json={"outcome": "approved", "reason": "This must not be committed."},
+    )
+
+    assert rejected.status_code == 409
+    assert "unavailable" in rejected.json()["detail"]
+    with sqlite3.connect(_database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0] == 0
+
+    rejected_without_evidence = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers={
+            **headers,
+            "Origin": "https://testserver",
+            "X-CSRF-Token": token,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-reject-missing-evidence",
+        },
+        json={
+            "outcome": "rejected",
+            "reason": "Original evidence is missing; reimbursement cannot be approved.",
+        },
+    )
+
+    assert rejected_without_evidence.status_code == 201
+    assert rejected_without_evidence.json()["status"] == "rejected"
+    with sqlite3.connect(_database_path) as connection:
+        payload = connection.execute(
+            """
+            SELECT payload_json FROM audit_events
+            WHERE request_id = 'REQ-WEB-1' AND event_type = 'human_review_decided'
+            """
+        ).fetchone()[0]
+    assert json.loads(payload)["evidence_integrity"] == "missing"
 
 
 def test_review_paths_reject_unbounded_or_invalid_request_ids(tmp_path) -> None:

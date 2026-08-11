@@ -206,6 +206,9 @@ def test_business_timeline_is_bounded_localized_and_excludes_technical_trace() -
     assert whitelist is not None
     fields = set(re.findall(r'"([a-z_]+)"', whitelist.group(1)))
     assert fields == {
+        "build_id",
+        "configuration_hash",
+        "evidence_integrity",
         "from_status",
         "to_status",
         "outcome",

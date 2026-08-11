@@ -143,6 +143,9 @@ const translations = {
     eventReasonOriginal: "Original rationale",
     eventRequestVersion: "Request version",
     eventPolicyVersion: "Policy version",
+    eventBuildId: "Executable build",
+    eventConfigurationHash: "Configuration fingerprint",
+    eventEvidenceIntegrity: "Evidence integrity at decision",
     eventRoute: "Automated route",
     eventDecisionId: "Decision ID",
     eventAutomatedDecisionId: "Automated decision ID",
@@ -389,6 +392,9 @@ const translations = {
     eventReasonOriginal: "Justificativa original",
     eventRequestVersion: "Versão da solicitação",
     eventPolicyVersion: "Versão da política",
+    eventBuildId: "Build executável",
+    eventConfigurationHash: "Impressão da configuração",
+    eventEvidenceIntegrity: "Integridade da evidência na decisão",
     eventRoute: "Roteamento automático",
     eventDecisionId: "ID da decisão",
     eventAutomatedDecisionId: "ID da decisão automática",
@@ -635,6 +641,9 @@ const translations = {
     eventReasonOriginal: "Justificación original",
     eventRequestVersion: "Versión de la solicitud",
     eventPolicyVersion: "Versión de la política",
+    eventBuildId: "Build ejecutable",
+    eventConfigurationHash: "Huella de configuración",
+    eventEvidenceIntegrity: "Integridad de evidencia al decidir",
     eventRoute: "Ruta automática",
     eventDecisionId: "ID de decisión",
     eventAutomatedDecisionId: "ID de decisión automática",
@@ -790,6 +799,9 @@ const businessEventTranslationKeys = {
 };
 
 const businessPayloadFields = Object.freeze([
+  "build_id",
+  "configuration_hash",
+  "evidence_integrity",
   "from_status",
   "to_status",
   "outcome",
@@ -1697,6 +1709,19 @@ function renderBusinessEvent(event) {
   ));
   detailCount += Number(appendTimelineFact(details, t("eventRequestVersion"), payload.request_version));
   detailCount += Number(appendTimelineFact(details, t("eventPolicyVersion"), payload.policy_version, "code-value"));
+  detailCount += Number(appendTimelineFact(details, t("eventBuildId"), payload.build_id, "code-value"));
+  detailCount += Number(appendTimelineFact(
+    details,
+    t("eventConfigurationHash"),
+    payload.configuration_hash,
+    "code-value",
+  ));
+  detailCount += Number(appendTimelineFact(
+    details,
+    t("eventEvidenceIntegrity"),
+    payload.evidence_integrity,
+    "code-value",
+  ));
   detailCount += Number(appendTimelineFact(details, t("eventRoute"), payload.route, "code-value"));
   detailCount += Number(appendTimelineFact(details, t("eventDecisionId"), payload.decision_id, "code-value"));
   detailCount += Number(appendTimelineFact(

@@ -253,6 +253,8 @@ def test_unhandled_orchestration_failure_is_recorded_once_without_error_message(
     metadata = json.loads(failure["metadata_json"])
     assert metadata["error_kind"] == "unhandled_exception"
     assert metadata["exception_type"] == "RuntimeError"
+    assert metadata["build_id"] == "local-unversioned"
+    assert len(metadata["configuration_hash"]) == 64
     serialized = json.dumps(dict(failure), sort_keys=True)
     assert "TOP-SECRET-OCR" not in serialized
     assert "private-original.jpg" not in serialized

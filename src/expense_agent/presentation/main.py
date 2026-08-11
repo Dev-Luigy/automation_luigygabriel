@@ -53,6 +53,7 @@ def create_receipt_extractor(settings: ReviewWebSettings) -> ReceiptExtractor:
 
 def create_environment_app() -> FastAPI:
     settings = ReviewWebSettings.from_environment()
+    execution_identity = settings.execution_identity
     extractor = create_receipt_extractor(settings)
     repository = SqliteReviewRepository(
         settings.database_path,
@@ -63,10 +64,14 @@ def create_environment_app() -> FastAPI:
         max_bytes=settings.attachment_max_bytes,
     )
     return create_app(
-        review_service=ReviewService(repository),
+        review_service=ReviewService(
+            repository,
+            execution_identity=execution_identity,
+        ),
         processing_service=ProcessingService(
             repository,
             extractor,
+            execution_identity=execution_identity,
         ),
         authenticator=BasicAuthenticator(settings.reviewers),
         csrf=CsrfProtector(settings.csrf_secret),
@@ -74,6 +79,7 @@ def create_environment_app() -> FastAPI:
         allowed_hosts=settings.allowed_hosts,
         attachment_store=attachment_store,
         attachment_max_bytes=settings.attachment_max_bytes,
+        execution_identity=execution_identity,
     )
 
 

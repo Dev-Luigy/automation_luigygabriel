@@ -1,5 +1,6 @@
 """Application services and ports."""
 
+from expense_agent.application.execution_identity import ExecutionIdentity
 from expense_agent.application.operational_audit import (
     OperationalAuditEvent,
     OperationalAuditOutcome,
@@ -8,6 +9,7 @@ from expense_agent.application.operational_audit import (
 )
 from expense_agent.application.review import (
     PendingAgeBucket,
+    ReviewAuthorizationError,
     ReviewBusinessEvent,
     ReviewCaseDetails,
     ReviewCaseStatus,
@@ -44,6 +46,7 @@ from expense_agent.application.workflow import (
 )
 
 __all__ = [
+    "ExecutionIdentity",
     "ExtractionSnapshot",
     "InvocationStatus",
     "InvocationSummary",
@@ -60,6 +63,7 @@ __all__ = [
     "RequestConflictError",
     "RequestNotFoundError",
     "RequestResult",
+    "ReviewAuthorizationError",
     "ReviewBusinessEvent",
     "ReviewCaseDetails",
     "ReviewCaseStatus",

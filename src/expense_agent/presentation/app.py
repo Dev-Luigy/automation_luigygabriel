@@ -33,6 +33,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from expense_agent.application import (
+    ExecutionIdentity,
     ExtractionSnapshot,
     OperationalAuditEvent,
     OperationalAuditOutcome,
@@ -43,6 +44,7 @@ from expense_agent.application import (
     RequestConflictError,
     RequestNotFoundError,
     RequestResult,
+    ReviewAuthorizationError,
     ReviewCaseDetails,
     ReviewConflictError,
     ReviewDecisionResult,
@@ -355,6 +357,7 @@ def create_app(
     operational_audit_recorder: OperationalAuditRecorder | None = None,
     attachment_store: AttachmentStore | None = None,
     attachment_max_bytes: int = 4 * 1024 * 1024,
+    execution_identity: ExecutionIdentity | None = None,
 ) -> FastAPI:
     """Create an HTTP adapter around injected application/security ports."""
 
@@ -367,6 +370,9 @@ def create_app(
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
     app.mount("/assets", StaticFiles(directory=STATIC_DIRECTORY), name="assets")
     basic = HTTPBasic(auto_error=False)
+    runtime_identity = execution_identity or ExecutionIdentity()
+    if not isinstance(runtime_identity, ExecutionIdentity):
+        raise TypeError("execution_identity must be an ExecutionIdentity")
     audit_recorder = operational_audit_recorder or review_service.operational_audit_recorder
     if audit_recorder is None:
         raise ValueError("create_app requires a durable operational audit recorder")
@@ -422,6 +428,8 @@ def create_app(
             authentication = _operational_authentication(request, response_status)
             route, operation_type = _operational_route(request)
             metadata = _operational_metadata(request, raised)
+            metadata["build_id"] = runtime_identity.build_id
+            metadata["configuration_hash"] = runtime_identity.configuration_hash
             audit_recorder.record_operation(
                 OperationalAuditEvent(
                     event_id=uuid4().hex,
@@ -566,6 +574,18 @@ def create_app(
     async def review_not_found_handler(request: Request, _exc: ReviewNotFoundError):
         _mark_operational_error(request, "not_found")
         return JSONResponse(status_code=404, content={"detail": "Review case not found"})
+
+    @app.exception_handler(ReviewAuthorizationError)
+    async def review_authorization_handler(
+        request: Request,
+        _exc: ReviewAuthorizationError,
+    ):
+        _mark_operational_error(request, "authorization_denied")
+        _add_operational_metadata(request, access_control="denied")
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": "Separation of duties does not allow this decision"},
+        )
 
     @app.exception_handler(ReviewConflictError)
     async def review_conflict_handler(request: Request, _exc: ReviewConflictError):
@@ -982,6 +1002,12 @@ def create_app(
                 status_code=403,
                 detail="A submitter cannot decide their own reimbursement",
             )
+        evidence_integrity = _verify_decision_evidence(
+            request,
+            details.submission,
+            attachment_store,
+            outcome=command.outcome,
+        )
         correlation_id = _correlation_id(request)
         result = review_service.decide(
             request_id=request_id,
@@ -991,6 +1017,7 @@ def create_app(
             expected_version=expected_version,
             correlation_id=correlation_id,
             idempotency_key=idempotency_key,
+            evidence_integrity=evidence_integrity,
         )
         _add_operational_metadata(request, decision_replayed=result.replayed)
         return _decision_response(result, correlation_id=correlation_id)
@@ -1414,6 +1441,92 @@ def _verify_managed_attachments(
         request,
         managed_attachment_count=len(references),
     )
+
+
+def _verify_decision_evidence(
+    request: Request,
+    submission: ReimbursementSubmission,
+    store: AttachmentStore | None,
+    *,
+    outcome: ReviewOutcome,
+) -> str:
+    """Fail closed unless every original is still present and byte-identical."""
+
+    references = tuple(attachment.location for attachment in submission.attachments)
+    if not references:
+        return _decision_evidence_failure(
+            request,
+            outcome=outcome,
+            integrity="missing",
+            error_kind="decision_evidence_missing",
+            detail="The original evidence is unavailable; the decision was not recorded",
+        )
+    if any(not reference.startswith(MANAGED_ATTACHMENT_PREFIX) for reference in references):
+        return _decision_evidence_failure(
+            request,
+            outcome=outcome,
+            integrity="unverifiable",
+            error_kind="decision_evidence_unmanaged",
+            detail="The original evidence cannot be verified; the decision was not recorded",
+        )
+
+    managed_store = _require_attachment_store(store)
+    for reference in references:
+        attachment_id = reference.removeprefix(MANAGED_ATTACHMENT_PREFIX)
+        if ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None:
+            return _decision_evidence_failure(
+                request,
+                outcome=outcome,
+                integrity="invalid_reference",
+                error_kind="decision_evidence_invalid",
+                detail="The original evidence cannot be verified; the decision was not recorded",
+            )
+        try:
+            managed_store.read(AttachmentId(attachment_id))
+        except AttachmentNotFound as exc:
+            return _decision_evidence_failure(
+                request,
+                outcome=outcome,
+                integrity="missing",
+                error_kind="decision_evidence_missing",
+                detail="The original evidence is unavailable; the decision was not recorded",
+                cause=exc,
+            )
+        except AttachmentIntegrityError as exc:
+            return _decision_evidence_failure(
+                request,
+                outcome=outcome,
+                integrity="failed",
+                error_kind="decision_evidence_corrupt",
+                detail="The original evidence failed integrity checks; the decision was not recorded",
+                cause=exc,
+            )
+    _add_operational_metadata(
+        request,
+        evidence_integrity="verified",
+        evidence_verified_count=len(references),
+    )
+    return "verified"
+
+
+def _decision_evidence_failure(
+    request: Request,
+    *,
+    outcome: ReviewOutcome,
+    integrity: str,
+    error_kind: str,
+    detail: str,
+    cause: Exception | None = None,
+) -> str:
+    _add_operational_metadata(request, evidence_integrity=integrity)
+    if outcome is ReviewOutcome.REJECTED:
+        _add_operational_metadata(request, evidence_rejection_override=True)
+        return integrity
+    _mark_operational_error(request, error_kind)
+    exception = HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
+    if cause is not None:
+        raise exception from cause
+    raise exception
 
 
 def _require_attachment_store(store: AttachmentStore | None) -> AttachmentStore:

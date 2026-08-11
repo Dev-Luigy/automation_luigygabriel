@@ -42,6 +42,7 @@ def test_sam_sandbox_keeps_secrets_out_of_source_and_marks_safety_boundary() -> 
     assert template.count("DeletionPolicy: Retain") == 1
     assert "EXPENSE_AGENT_SQLITE_JOURNAL_MODE: DELETE" in template
     assert "EXPENSE_AGENT_ATTACHMENT_ROOT: /mnt/expense-agent/attachments" in template
+    assert "EXPENSE_AGENT_BUILD_ID: !Ref BuildId" in template
     assert 'EXPENSE_AGENT_ATTACHMENT_MAX_BYTES: "4194304"' in template
     assert "ReservedConcurrentExecutions: 4" in template
     assert "ASSESSMENT SANDBOX ONLY" in template
@@ -52,6 +53,11 @@ def test_sam_sandbox_keeps_secrets_out_of_source_and_marks_safety_boundary() -> 
     assert "Handler: expense_agent.presentation.lambda_handler.handler" in template
     assert "CodeUri: .build/lambda" in template
     assert os.access(AWS_DEPLOY / "deploy.sh", os.X_OK)
+
+    deploy = (AWS_DEPLOY / "deploy.sh").read_text(encoding="utf-8")
+    assert "git status --porcelain --untracked-files=normal" in deploy
+    assert "git-${ea_git_sha}-lock-${ea_lock_sha}" in deploy
+    assert '"ParameterKey=BuildId,ParameterValue=${ea_build_id}"' in deploy
 
 
 def test_deploy_script_has_valid_bash_syntax() -> None:

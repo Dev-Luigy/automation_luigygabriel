@@ -61,6 +61,35 @@ def test_settings_load_explicit_security_boundaries(monkeypatch, tmp_path) -> No
     assert settings.http_json_extractor_settings is None
     assert settings.attachment_root == tmp_path / "attachments"
     assert settings.attachment_max_bytes == 4 * 1024 * 1024
+    assert settings.build_id == "local-unversioned"
+    assert len(settings.configuration_hash) == 64
+    assert settings.execution_identity.configuration_hash == settings.configuration_hash
+
+
+def test_execution_identity_hashes_complete_effective_configuration(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _configure_valid_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("EXPENSE_AGENT_BUILD_ID", "git-a1b2c3-lock-d4e5f6")
+
+    first = ReviewWebSettings.from_environment()
+    repeated_hash = first.configuration_hash
+    monkeypatch.setenv("EXPENSE_AGENT_CSRF_SECRET", "y" * 32)
+    changed = ReviewWebSettings.from_environment()
+
+    assert first.execution_identity.build_id == "git-a1b2c3-lock-d4e5f6"
+    assert repeated_hash == first.configuration_hash
+    assert changed.configuration_hash != repeated_hash
+    assert first.csrf_secret not in first.configuration_hash
+
+
+def test_invalid_build_identity_is_rejected_at_startup(monkeypatch, tmp_path) -> None:
+    _configure_valid_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("EXPENSE_AGENT_BUILD_ID", "dirty build with spaces")
+
+    with pytest.raises(SecurityConfigurationError, match="BUILD_ID"):
+        ReviewWebSettings.from_environment()
 
 
 def test_attachment_storage_settings_are_explicit_and_bounded(monkeypatch, tmp_path) -> None:

@@ -3,7 +3,9 @@ from datetime import UTC, datetime
 
 import pytest
 
+from expense_agent.application import ExecutionIdentity
 from expense_agent.application.review import (
+    ReviewAuthorizationError,
     ReviewCaseDetails,
     ReviewCaseStatus,
     ReviewConflictError,
@@ -78,6 +80,7 @@ def _details() -> ReviewCaseDetails:
         extraction=None,
         problems=(ReviewProblem(code="TOTAL_MISMATCH", message="Check the receipt total"),),
         automated_decision=automated,
+        submission_actor_id="employee-directory:submitter",
     )
 
 
@@ -120,6 +123,10 @@ def test_service_uses_canonical_reviewer_and_aggregate_transition() -> None:
         clock=lambda: REVIEWED_AT,
         decision_id_factory=lambda: "HUMAN-1001",
         event_id_factory=lambda: "AUDIT-1001",
+        execution_identity=ExecutionIdentity(
+            build_id="git-test-lock-test",
+            configuration_hash="a" * 64,
+        ),
     )
 
     result = service.decide(
@@ -130,6 +137,7 @@ def test_service_uses_canonical_reviewer_and_aggregate_transition() -> None:
         expected_version=1,
         correlation_id="corr-1001",
         idempotency_key="decision-key-1001",
+        evidence_integrity="verified",
     )
 
     assert result.resulting_status is ReimbursementStatus.APPROVED_AFTER_REVIEW
@@ -141,6 +149,9 @@ def test_service_uses_canonical_reviewer_and_aggregate_transition() -> None:
     assert audit.actor.actor_id == "user-42"
     assert audit.payload["request_version"] == 1
     assert audit.payload["to_status"] == "approved_after_review"
+    assert audit.payload["build_id"] == "git-test-lock-test"
+    assert audit.payload["configuration_hash"] == "a" * 64
+    assert audit.payload["evidence_integrity"] == "verified"
 
 
 def test_service_rejects_missing_or_stale_cases() -> None:
@@ -170,8 +181,8 @@ def test_service_rejects_missing_or_stale_cases() -> None:
             expected_version=1,
             correlation_id="corr-stale",
             idempotency_key="decision-key-stale",
+            evidence_integrity="verified",
         )
-
 
 def test_service_requires_a_reason_and_typed_authenticated_identity() -> None:
     service = ReviewService(FakeReviewRepository(_details()), clock=lambda: REVIEWED_AT)
@@ -186,6 +197,7 @@ def test_service_requires_a_reason_and_typed_authenticated_identity() -> None:
             expected_version=1,
             correlation_id="corr-1",
             idempotency_key="decision-key-reason",
+            evidence_integrity="verified",
         )
 
     with pytest.raises(DomainValidationError, match="ReviewerIdentity"):
@@ -197,8 +209,54 @@ def test_service_requires_a_reason_and_typed_authenticated_identity() -> None:
             expected_version=1,
             correlation_id="corr-2",
             idempotency_key="decision-key-identity",
+            evidence_integrity="verified",
         )
 
+
+@pytest.mark.parametrize(
+    "details",
+    (
+        replace(_details(), submission_actor_id=None),
+        replace(_details(), submission_actor_id="user-1"),
+        replace(
+            _details(),
+            submission=replace(
+                _details().submission,
+                submitted_by="reviewer@company.com",
+            ),
+        ),
+    ),
+)
+def test_service_enforces_separation_of_duties_for_every_adapter(details) -> None:
+    service = ReviewService(FakeReviewRepository(details), clock=lambda: REVIEWED_AT)
+
+    with pytest.raises(ReviewAuthorizationError):
+        service.decide(
+            request_id="REQ-1001",
+            outcome=ReviewOutcome.REJECTED,
+            reason="Separation of duties must be enforced.",
+            reviewer=ReviewerIdentity("user-1", "reviewer@company.com", "Reviewer"),
+            expected_version=1,
+            correlation_id="corr-four-eyes",
+            idempotency_key="decision-key-four-eyes",
+            evidence_integrity="missing",
+        )
+
+
+def test_service_never_approves_without_verified_original_evidence() -> None:
+    service = ReviewService(FakeReviewRepository(_details()), clock=lambda: REVIEWED_AT)
+
+    with pytest.raises(DomainValidationError, match="verified original evidence"):
+        service.decide(
+            request_id="REQ-1001",
+            outcome=ReviewOutcome.APPROVED,
+            reason="Approval cannot trust unavailable evidence.",
+            reviewer=ReviewerIdentity("user-1", "reviewer@company.com", "Reviewer"),
+            expected_version=1,
+            correlation_id="corr-evidence",
+            idempotency_key="decision-key-unverified-evidence",
+            evidence_integrity="missing",
+        )
 
 def test_service_does_not_allow_human_approval_to_override_mandatory_rejection() -> None:
     details = _details()
@@ -244,6 +302,7 @@ def test_service_does_not_allow_human_approval_to_override_mandatory_rejection()
             expected_version=details.version,
             correlation_id="corr-mandatory-reject",
             idempotency_key="decision-key-mandatory",
+            evidence_integrity="verified",
         )
 
 

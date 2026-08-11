@@ -244,6 +244,9 @@ def test_end_to_end_processing_persists_every_route_and_safe_result(
     assert "raw_response" not in repr(outcome.result)
     assert outcome.result.processing_run is not None
     assert outcome.result.processing_run.status.value == "completed"
+    assert outcome.result.processing_run.pipeline_version.startswith(
+        "baseline-v3;build=local-unversioned;config="
+    )
     if expected_status is ReimbursementStatus.PENDING_REVIEW:
         review = repository.get(request_id)
         assert review is not None
@@ -360,6 +363,7 @@ def test_real_pipeline_pending_v3_remains_compatible_with_human_decision_v4(tmp_
         expected_version=3,
         correlation_id="corr-human",
         idempotency_key="decision-key-pipeline-review",
+        evidence_integrity="verified",
     )
 
     assert reviewed.version == 4

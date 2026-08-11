@@ -5,6 +5,12 @@ Description: >-
   architecture and must not process real financial or receipt data.
 
 Parameters:
+  BuildId:
+    Type: String
+    MinLength: 1
+    MaxLength: 192
+    AllowedPattern: "^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,191}$"
+    Description: Immutable source and dependency-lock identity supplied by deploy.sh.
   EnvironmentName:
     Type: String
     Default: expense-agent-sandbox
@@ -209,6 +215,7 @@ Resources:
           EXPENSE_AGENT_ALLOWED_HOSTS: !Sub "*.execute-api.${AWS::Region}.${AWS::URLSuffix}"
           EXPENSE_AGENT_ATTACHMENT_MAX_BYTES: "4194304"
           EXPENSE_AGENT_ATTACHMENT_ROOT: /mnt/expense-agent/attachments
+          EXPENSE_AGENT_BUILD_ID: !Ref BuildId
           EXPENSE_AGENT_CSRF_SECRET: !Ref CsrfSecret
           EXPENSE_AGENT_DATABASE_PATH: /mnt/expense-agent/expense-agent.sqlite3
           EXPENSE_AGENT_REQUIRE_HTTPS: "true"

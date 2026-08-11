@@ -49,6 +49,24 @@ if [[ "${ea_reviewer_id}" == "assessment:seed-submitter" ]]; then
     exit 1
 fi
 
+ea_build_id="${EA_BUILD_ID:-}"
+if [[ -z "${ea_build_id}" ]]; then
+    require_command git
+    if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+        echo "Refusing to derive a build identity from a dirty worktree." >&2
+        echo "Commit the intended source or set an audited EA_BUILD_ID in CI." >&2
+        exit 1
+    fi
+    ea_git_sha="$(git rev-parse --verify HEAD)"
+    ea_lock_digest="$(openssl dgst -sha256 uv.lock)"
+    ea_lock_sha="${ea_lock_digest##* }"
+    ea_build_id="git-${ea_git_sha}-lock-${ea_lock_sha}"
+fi
+if [[ ! "${ea_build_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,191}$ ]]; then
+    echo "EA_BUILD_ID is not a valid immutable build identifier." >&2
+    exit 1
+fi
+
 ea_aws_global=(--region "${ea_region}")
 ea_sam_profile=()
 if [[ -n "${ea_profile}" ]]; then
@@ -115,6 +133,7 @@ sam deploy \
     --on-failure ROLLBACK \
     --parameter-overrides \
         "ParameterKey=EnvironmentName,ParameterValue=${ea_environment_name}" \
+        "ParameterKey=BuildId,ParameterValue=${ea_build_id}" \
         "ParameterKey=ReviewerUsername,ParameterValue=${ea_reviewer_username}" \
         "ParameterKey=ReviewerId,ParameterValue=${ea_reviewer_id}" \
         "ParameterKey=ReviewerEmail,ParameterValue=${ea_reviewer_email}" \
@@ -146,7 +165,7 @@ if [[ "${EA_SEED_DEMO:-true}" == "true" ]]; then
 fi
 
 unset ea_reviewer_password ea_reviewer_password_hash ea_seed_password
-unset ea_seed_password_hash ea_csrf_secret
+unset ea_seed_password_hash ea_csrf_secret ea_git_sha ea_lock_digest ea_lock_sha
 echo
 echo "Assessment sandbox deployed."
 echo "Submit UI: ${ea_api_url}/submit"

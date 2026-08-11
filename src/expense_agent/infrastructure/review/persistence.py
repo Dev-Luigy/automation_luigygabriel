@@ -626,11 +626,15 @@ _EMPTY_OUTPUT_HASH = hashlib.sha256(b"").hexdigest()
 _BUSINESS_EVENT_PAYLOAD_FIELDS = {
     "reimbursement_received": (
         "attachment_count",
+        "build_id",
+        "configuration_hash",
         "request_version",
         "submission_hash",
         "to_status",
     ),
     "reimbursement_processing_started": (
+        "build_id",
+        "configuration_hash",
         "from_status",
         "pipeline_version",
         "processing_run_id",
@@ -671,7 +675,10 @@ _BUSINESS_EVENT_PAYLOAD_FIELDS = {
         "to_status",
     ),
     "human_review_decided": (
+        "build_id",
+        "configuration_hash",
         "decision_id",
+        "evidence_integrity",
         "from_status",
         "outcome",
         "reason",
