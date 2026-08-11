@@ -145,6 +145,33 @@ def test_decision_rejects_missing_csrf_cross_origin_and_stale_version(tmp_path) 
     assert stale.status_code == 412
 
 
+def test_review_paths_reject_unbounded_or_invalid_request_ids(tmp_path) -> None:
+    client, _database_path = _web_client(tmp_path)
+    headers, token = _session(client)
+    write_headers = {
+        **headers,
+        "Origin": "https://testserver",
+        "X-CSRF-Token": token,
+        "If-Match": '"unused"',
+        "Idempotency-Key": "decision-key-invalid-path",
+    }
+
+    for request_id in ("!invalid", "A" * 129):
+        assert client.get(f"/api/reviews/{request_id}", headers=headers).status_code == 422
+        assert (
+            client.get(f"/api/reviews/{request_id}/events", headers=headers).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/api/reviews/{request_id}/decisions",
+                headers=write_headers,
+                json={"outcome": "rejected", "reason": "Invalid path."},
+            ).status_code
+            == 422
+        )
+
+
 def test_decision_identity_is_server_derived_and_writes_one_atomic_audit(tmp_path) -> None:
     client, database_path = _web_client(tmp_path)
     headers, token = _session(client)

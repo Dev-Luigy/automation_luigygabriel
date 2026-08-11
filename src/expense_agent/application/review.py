@@ -348,6 +348,7 @@ class ReviewCaseDetails:
     automated_decision: AutomatedDecision
     human_decision: HumanDecision | None = None
     reviewed_by: ReviewerIdentity | None = None
+    submission_actor_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.submission, ReimbursementSubmission):
@@ -376,6 +377,12 @@ class ReviewCaseDetails:
                 raise DomainValidationError("reviewed_by is required with a human decision")
         elif self.reviewed_by is not None:
             raise DomainValidationError("reviewed_by requires a human decision")
+        if self.submission_actor_id is not None:
+            object.__setattr__(
+                self,
+                "submission_actor_id",
+                require_non_blank(self.submission_actor_id, "submission_actor_id"),
+            )
 
     @property
     def request_id(self) -> str:

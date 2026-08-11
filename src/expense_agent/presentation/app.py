@@ -847,7 +847,10 @@ def create_app(
 
     @app.get("/api/reviews/{request_id}")
     def review_details(
-        request_id: str,
+        request_id: Annotated[
+            str,
+            ApiPath(min_length=1, max_length=128, pattern=REQUEST_ID_PATTERN.pattern),
+        ],
         _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> JSONResponse:
         details = review_service.get(request_id)
@@ -912,7 +915,10 @@ def create_app(
 
     @app.get("/api/reviews/{request_id}/events")
     def review_events(
-        request_id: str,
+        request_id: Annotated[
+            str,
+            ApiPath(min_length=1, max_length=128, pattern=REQUEST_ID_PATTERN.pattern),
+        ],
         query: Annotated[ReviewEventRequest, Query()],
         _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> dict[str, Any]:
@@ -921,7 +927,10 @@ def create_app(
     @app.post("/api/reviews/{request_id}/decisions", status_code=201)
     def decide(
         request: Request,
-        request_id: str,
+        request_id: Annotated[
+            str,
+            ApiPath(min_length=1, max_length=128, pattern=REQUEST_ID_PATTERN.pattern),
+        ],
         command: DecisionRequest,
         reviewer: Annotated[ReviewerPrincipal, Depends(require_csrf_and_same_origin)],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
@@ -956,7 +965,17 @@ def create_app(
             return _decision_response(replay, correlation_id=_correlation_id(request))
 
         details = review_service.get(request_id)
-        if details.submission.submitted_by.casefold() == reviewer.email.casefold():
+        if details.submission_actor_id is None:
+            _mark_operational_error(request, "submission_actor_unavailable")
+            _add_operational_metadata(request, access_control="denied")
+            raise HTTPException(
+                status_code=403,
+                detail="Submission actor is unavailable; separation of duties cannot be verified",
+            )
+        if (
+            details.submission_actor_id == reviewer.reviewer_id
+            or details.submission.submitted_by.casefold() == reviewer.email.casefold()
+        ):
             _mark_operational_error(request, "self_review_denied")
             _add_operational_metadata(request, access_control="denied")
             raise HTTPException(

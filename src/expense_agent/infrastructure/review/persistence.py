@@ -2190,7 +2190,25 @@ class SqliteReviewRepository:
                     r.request_id, r.submitted_by, r.submitted_at, r.raw_ocr_text,
                     r.claimed_category, r.claimed_amount, r.currency, r.opened_at,
                     r.status AS reimbursement_status, r.version,
-                    rc.status AS review_status, rc.pending_since, rc.source_decision_id
+                    rc.status AS review_status, rc.pending_since, rc.source_decision_id,
+                    COALESCE(
+                        (
+                            SELECT ae.actor_id
+                            FROM audit_events AS ae
+                            WHERE ae.request_id = r.request_id
+                              AND ae.event_type = 'reimbursement_received'
+                              AND ae.actor_type = 'submitter'
+                            ORDER BY ae.occurred_at ASC, ae.event_id ASC
+                            LIMIT 1
+                        ),
+                        (
+                            SELECT 'preprocessed:' || pr.request_id
+                            FROM processing_runs AS pr
+                            WHERE pr.request_id = r.request_id
+                              AND pr.pipeline_version = 'preprocessed-review-adapter-v1'
+                            LIMIT 1
+                        )
+                    ) AS submission_actor_id
                 FROM reimbursements AS r
                 JOIN review_cases AS rc ON rc.request_id = r.request_id
                 WHERE r.request_id = ?
@@ -2255,6 +2273,7 @@ class SqliteReviewRepository:
             automated_decision=automated_decision,
             human_decision=human_decision,
             reviewed_by=reviewed_by,
+            submission_actor_id=row["submission_actor_id"],
         )
 
     def list_business_events(

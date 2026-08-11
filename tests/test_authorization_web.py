@@ -10,6 +10,7 @@ from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 from expense_agent.infrastructure.extraction import DeterministicReceiptExtractor
 from expense_agent.infrastructure.review import SqliteReviewRepository
 from expense_agent.presentation.app import create_app
+from expense_agent.presentation.demo_seed import _build_case
 from expense_agent.presentation.security import (
     BasicAuthenticator,
     CsrfProtector,
@@ -252,8 +253,8 @@ def test_decisions_require_reviewer_role_and_block_self_review(tmp_path: Path) -
     assert reviewed.json()["status"] == "approved_after_review"
 
 
-def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path) -> None:
-    client, _database_path = _client(tmp_path)
+def test_admin_on_behalf_submission_still_cannot_be_self_reviewed(tmp_path: Path) -> None:
+    client, database_path = _client(tmp_path)
     admin_write = _write_headers(client, "admin")
 
     on_behalf = client.post(
@@ -264,6 +265,7 @@ def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path)
             admin_write,
             "REQ-ADMIN-BEHALF",
             "employee@example.com",
+            amount="640.00",
         ),
     )
     own = client.post(
@@ -279,18 +281,103 @@ def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path)
     )
 
     assert on_behalf.status_code == 201
+    assert on_behalf.json()["status"] == "pending_review"
     assert own.status_code == 201
-    details = client.get("/api/reviews/REQ-ADMIN-OWN", headers=_headers("admin"))
-    denied = client.post(
+    with sqlite3.connect(database_path) as connection:
+        submission_actor = connection.execute(
+            """
+            SELECT actor_id FROM audit_events
+            WHERE request_id = 'REQ-ADMIN-BEHALF'
+              AND event_type = 'reimbursement_received'
+            """
+        ).fetchone()
+    assert submission_actor == ("directory:admin",)
+    on_behalf_details = client.get(
+        "/api/reviews/REQ-ADMIN-BEHALF",
+        headers=_headers("admin"),
+    )
+    on_behalf_denied = client.post(
+        "/api/reviews/REQ-ADMIN-BEHALF/decisions",
+        headers={
+            **admin_write,
+            "If-Match": on_behalf_details.headers["etag"],
+            "Idempotency-Key": "decision-key-admin-on-behalf",
+        },
+        json={
+            "outcome": "rejected",
+            "reason": "The authenticated submitter actor must not review this claim.",
+        },
+    )
+    assert on_behalf_denied.status_code == 403
+
+    own_details = client.get("/api/reviews/REQ-ADMIN-OWN", headers=_headers("admin"))
+    own_denied = client.post(
         "/api/reviews/REQ-ADMIN-OWN/decisions",
         headers={
             **admin_write,
-            "If-Match": details.headers["etag"],
-            "Idempotency-Key": "decision-key-admin-self",
+            "If-Match": own_details.headers["etag"],
+            "Idempotency-Key": "decision-key-admin-own",
         },
         json={"outcome": "rejected", "reason": "Self-review must remain blocked."},
     )
+    assert own_denied.status_code == 403
+
+    reviewer_write = _write_headers(client, "reviewer")
+    reviewed = client.post(
+        "/api/reviews/REQ-ADMIN-BEHALF/decisions",
+        headers={
+            **reviewer_write,
+            "If-Match": on_behalf_details.headers["etag"],
+            "Idempotency-Key": "decision-key-distinct-reviewer",
+        },
+        json={"outcome": "approved", "reason": "Independent reviewer checked evidence."},
+    )
+    assert reviewed.status_code == 201
+
+
+def test_legacy_case_without_submission_actor_fails_closed(tmp_path: Path) -> None:
+    client, database_path = _client(tmp_path)
+    repository = SqliteReviewRepository(database_path)
+    case, extraction, problems = _build_case(
+        request_id="REQ-LEGACY-NO-ACTOR",
+        submitted_by="legacy.employee@example.com",
+        amount="640.00",
+        extracted_amount="640.00",
+        category="lodging",
+        merchant="Legacy Fixture",
+        problem_code="POLICY_EVIDENCE_REQUIRED",
+        problem_message="Legacy case requires an independent reviewer.",
+        offset_minutes=5,
+    )
+    repository.add_pending_case(case, extraction=extraction, problems=problems)
+    with sqlite3.connect(database_path) as connection:
+        # Simulate a pre-actor legacy snapshot; current terminal-run immutability
+        # correctly prevents this mutation outside this isolated fixture setup.
+        connection.execute("DROP TRIGGER processing_runs_terminal_no_update")
+        connection.execute(
+            """
+            UPDATE processing_runs SET pipeline_version = 'legacy-review-adapter-v1'
+            WHERE request_id = 'REQ-LEGACY-NO-ACTOR'
+            """
+        )
+
+    reviewer_write = _write_headers(client, "reviewer")
+    details = client.get(
+        "/api/reviews/REQ-LEGACY-NO-ACTOR",
+        headers=_headers("reviewer"),
+    )
+    denied = client.post(
+        "/api/reviews/REQ-LEGACY-NO-ACTOR/decisions",
+        headers={
+            **reviewer_write,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-missing-actor",
+        },
+        json={"outcome": "rejected", "reason": "This must fail closed."},
+    )
+
     assert denied.status_code == 403
+    assert "separation of duties cannot be verified" in denied.json()["detail"]
 
 
 def test_managed_attachment_must_exist_and_pass_integrity_before_intake(
