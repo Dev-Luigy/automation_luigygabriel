@@ -2,15 +2,144 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
+from urllib.parse import urlsplit
 
 from expense_agent.presentation.security import (
     ReviewerCredential,
     SecurityConfigurationError,
     load_reviewer_credentials,
 )
+
+ExtractorParameter = str | int | float | bool | None
+
+_HTTP_JSON_EXTRACTOR_ENVIRONMENT = (
+    "EXPENSE_AGENT_EXTRACTOR_ENDPOINT",
+    "EXPENSE_AGENT_EXTRACTOR_PROVIDER",
+    "EXPENSE_AGENT_EXTRACTOR_MODEL",
+    "EXPENSE_AGENT_EXTRACTOR_API_KEY",
+    "EXPENSE_AGENT_EXTRACTOR_TIMEOUT_SECONDS",
+    "EXPENSE_AGENT_EXTRACTOR_MAX_RESPONSE_BYTES",
+    "EXPENSE_AGENT_EXTRACTOR_PARAMETERS_JSON",
+)
+_MAX_PARAMETERS_JSON_BYTES = 16 * 1024
+
+
+class ExtractorMode(str, Enum):
+    """Extractor implementations allowed at the environment trust boundary."""
+
+    DETERMINISTIC = "deterministic"
+    HTTP_JSON = "http_json"
+
+
+@dataclass(frozen=True, slots=True)
+class HttpJsonExtractorSettings:
+    """Validated, secret-safe settings for the optional HTTPS JSON adapter."""
+
+    endpoint: str
+    provider: str
+    model: str
+    api_key: str | None = field(default=None, repr=False)
+    timeout_seconds: float = 10.0
+    max_response_bytes: int = 256 * 1024
+    parameters: Mapping[str, ExtractorParameter] = field(default_factory=lambda: {"temperature": 0})
+
+    def __post_init__(self) -> None:
+        endpoint = self.endpoint
+        if not isinstance(endpoint, str) or endpoint != endpoint.strip():
+            raise SecurityConfigurationError("extractor endpoint must be an absolute HTTPS URL")
+        if any(character.isspace() for character in endpoint):
+            raise SecurityConfigurationError("extractor endpoint must be an absolute HTTPS URL")
+        try:
+            parsed = urlsplit(endpoint)
+            hostname = parsed.hostname
+            _port = parsed.port
+        except ValueError as exc:
+            raise SecurityConfigurationError(
+                "extractor endpoint must be an absolute HTTPS URL"
+            ) from exc
+        if parsed.scheme != "https" or not hostname:
+            raise SecurityConfigurationError("extractor endpoint must be an absolute HTTPS URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise SecurityConfigurationError(
+                "extractor endpoint must not contain credentials, query, or fragment"
+            )
+
+        for field_name in ("provider", "model"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise SecurityConfigurationError(f"extractor {field_name} must not be blank")
+            normalized = value.strip()
+            if _contains_control_character(normalized):
+                raise SecurityConfigurationError(
+                    f"extractor {field_name} must not contain control characters"
+                )
+            object.__setattr__(self, field_name, normalized)
+
+        if self.api_key is not None:
+            if not isinstance(self.api_key, str) or not self.api_key.strip():
+                raise SecurityConfigurationError("extractor API key must not be blank")
+            normalized_key = self.api_key.strip()
+            if any(character.isspace() for character in normalized_key):
+                raise SecurityConfigurationError("extractor API key must not contain whitespace")
+            object.__setattr__(self, "api_key", normalized_key)
+
+        timeout = self.timeout_seconds
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= 120
+        ):
+            raise SecurityConfigurationError(
+                "extractor timeout must be a finite number between 0 and 120 seconds"
+            )
+        object.__setattr__(self, "timeout_seconds", float(timeout))
+
+        response_limit = self.max_response_bytes
+        if (
+            isinstance(response_limit, bool)
+            or not isinstance(response_limit, int)
+            or not 1_024 <= response_limit <= 4 * 1024 * 1024
+        ):
+            raise SecurityConfigurationError(
+                "extractor response limit must be between 1024 and 4194304 bytes"
+            )
+
+        if not isinstance(self.parameters, Mapping):
+            raise SecurityConfigurationError("extractor parameters must be a JSON object")
+        normalized_parameters: dict[str, ExtractorParameter] = {}
+        for key, value in self.parameters.items():
+            if not isinstance(key, str) or not key.strip():
+                raise SecurityConfigurationError(
+                    "extractor parameter keys must be non-blank strings"
+                )
+            normalized_key = key.strip()
+            if normalized_key in normalized_parameters:
+                raise SecurityConfigurationError(
+                    "extractor parameters contain duplicate normalized keys"
+                )
+            if _contains_control_character(normalized_key):
+                raise SecurityConfigurationError(
+                    "extractor parameter keys must not contain control characters"
+                )
+            if value is not None and not isinstance(value, (str, int, float, bool)):
+                raise SecurityConfigurationError(
+                    "extractor parameter values must be JSON scalar values"
+                )
+            if isinstance(value, float) and not math.isfinite(value):
+                raise SecurityConfigurationError(
+                    "extractor floating-point parameters must be finite"
+                )
+            normalized_parameters[normalized_key] = value
+        object.__setattr__(self, "parameters", MappingProxyType(normalized_parameters))
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +153,8 @@ class ReviewWebSettings:
     host: str
     port: int
     forwarded_allow_ips: str
+    extractor_mode: ExtractorMode
+    http_json_extractor_settings: HttpJsonExtractorSettings | None
 
     @classmethod
     def from_environment(cls) -> ReviewWebSettings:
@@ -47,10 +178,14 @@ class ReviewWebSettings:
             raise SecurityConfigurationError(
                 "allowed hosts must be explicit and must not contain a bare wildcard"
             )
-        sqlite_journal_mode = os.environ.get(
-            "EXPENSE_AGENT_SQLITE_JOURNAL_MODE",
-            "WAL",
-        ).strip().upper()
+        sqlite_journal_mode = (
+            os.environ.get(
+                "EXPENSE_AGENT_SQLITE_JOURNAL_MODE",
+                "WAL",
+            )
+            .strip()
+            .upper()
+        )
         if sqlite_journal_mode not in {"WAL", "DELETE"}:
             raise SecurityConfigurationError(
                 "EXPENSE_AGENT_SQLITE_JOURNAL_MODE must be WAL or DELETE"
@@ -69,6 +204,7 @@ class ReviewWebSettings:
             raise SecurityConfigurationError(
                 "forwarded proxy IPs must be explicit and must not be a wildcard"
             )
+        extractor_mode, http_json_extractor_settings = _load_extractor_settings()
         return cls(
             database_path=database_path,
             sqlite_journal_mode=sqlite_journal_mode,
@@ -79,6 +215,8 @@ class ReviewWebSettings:
             host=os.environ.get("EXPENSE_AGENT_HOST", "127.0.0.1"),
             port=port,
             forwarded_allow_ips=forwarded_allow_ips,
+            extractor_mode=extractor_mode,
+            http_json_extractor_settings=http_json_extractor_settings,
         )
 
 
@@ -99,3 +237,120 @@ def _environment_bool(name: str, *, default: bool) -> bool:
     if normalized == "false":
         return False
     raise SecurityConfigurationError(f"{name} must be true or false")
+
+
+def _load_extractor_settings() -> tuple[ExtractorMode, HttpJsonExtractorSettings | None]:
+    raw_mode = os.environ.get("EXPENSE_AGENT_EXTRACTOR_MODE", ExtractorMode.DETERMINISTIC.value)
+    try:
+        mode = ExtractorMode(raw_mode.strip().lower())
+    except ValueError as exc:
+        raise SecurityConfigurationError(
+            "EXPENSE_AGENT_EXTRACTOR_MODE must be deterministic or http_json"
+        ) from exc
+
+    if mode is ExtractorMode.DETERMINISTIC:
+        unexpected = [name for name in _HTTP_JSON_EXTRACTOR_ENVIRONMENT if name in os.environ]
+        if unexpected:
+            names = ", ".join(unexpected)
+            raise SecurityConfigurationError(
+                f"{names} may only be set when EXPENSE_AGENT_EXTRACTOR_MODE=http_json"
+            )
+        return mode, None
+
+    endpoint = _required_trimmed_environment("EXPENSE_AGENT_EXTRACTOR_ENDPOINT")
+    provider = _required_trimmed_environment("EXPENSE_AGENT_EXTRACTOR_PROVIDER")
+    model = _required_trimmed_environment("EXPENSE_AGENT_EXTRACTOR_MODEL")
+    api_key = _optional_secret_environment("EXPENSE_AGENT_EXTRACTOR_API_KEY")
+    timeout_seconds = _environment_float(
+        "EXPENSE_AGENT_EXTRACTOR_TIMEOUT_SECONDS",
+        default=10.0,
+    )
+    max_response_bytes = _environment_int(
+        "EXPENSE_AGENT_EXTRACTOR_MAX_RESPONSE_BYTES",
+        default=256 * 1024,
+    )
+    parameters = _environment_parameters()
+    return mode, HttpJsonExtractorSettings(
+        endpoint=endpoint,
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        timeout_seconds=timeout_seconds,
+        max_response_bytes=max_response_bytes,
+        parameters=parameters,
+    )
+
+
+def _required_trimmed_environment(name: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        raise SecurityConfigurationError(f"{name} is required for the http_json extractor")
+    return raw.strip()
+
+
+def _optional_secret_environment(name: str) -> str | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    if not raw.strip():
+        raise SecurityConfigurationError(f"{name} must not be blank when set")
+    return raw.strip()
+
+
+def _environment_float(name: str, *, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError as exc:
+        raise SecurityConfigurationError(f"{name} must be a number") from exc
+
+
+def _environment_int(name: str, *, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise SecurityConfigurationError(f"{name} must be an integer") from exc
+
+
+def _environment_parameters() -> Mapping[str, ExtractorParameter]:
+    name = "EXPENSE_AGENT_EXTRACTOR_PARAMETERS_JSON"
+    raw = os.environ.get(name, '{"temperature":0}')
+    try:
+        encoded_size = len(raw.encode("utf-8", errors="strict"))
+    except UnicodeError as exc:
+        raise SecurityConfigurationError(f"{name} must be valid UTF-8") from exc
+    if encoded_size > _MAX_PARAMETERS_JSON_BYTES:
+        raise SecurityConfigurationError(f"{name} exceeds the 16384-byte limit")
+    try:
+        decoded = json.loads(
+            raw,
+            object_pairs_hook=_unique_json_object,
+            parse_constant=_reject_non_finite_json_number,
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise SecurityConfigurationError(f"{name} must be strict JSON") from exc
+    if not isinstance(decoded, dict):
+        raise SecurityConfigurationError(f"{name} must contain a JSON object")
+    return decoded
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_non_finite_json_number(value: str) -> None:
+    raise ValueError("non-finite JSON number")
+
+
+def _contains_control_character(value: str) -> bool:
+    return any(ord(character) < 32 or ord(character) == 127 for character in value)
