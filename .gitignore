@@ -1,6 +1,7 @@
 .DS_Store
 .env
 .venv/
+.aws-sam/
 .pytest_cache/
 .ruff_cache/
 __pycache__/
@@ -12,4 +13,5 @@ data/
 build/
 dist/
 tmp/
+deploy/aws/.build/
 *.egg-info/
