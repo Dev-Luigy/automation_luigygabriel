@@ -62,6 +62,7 @@ def create_environment_app() -> FastAPI:
     attachment_store = FileSystemAttachmentStore(
         settings.attachment_root,
         max_bytes=settings.attachment_max_bytes,
+        trusted_owner_uid=settings.attachment_owner_uid,
     )
     return create_app(
         review_service=ReviewService(

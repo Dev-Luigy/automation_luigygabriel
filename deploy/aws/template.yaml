@@ -214,6 +214,7 @@ Resources:
         Variables:
           EXPENSE_AGENT_ALLOWED_HOSTS: !Sub "*.execute-api.${AWS::Region}.${AWS::URLSuffix}"
           EXPENSE_AGENT_ATTACHMENT_MAX_BYTES: "4194304"
+          EXPENSE_AGENT_ATTACHMENT_OWNER_UID: "1000"
           EXPENSE_AGENT_ATTACHMENT_ROOT: /mnt/expense-agent/attachments
           EXPENSE_AGENT_BUILD_ID: !Ref BuildId
           EXPENSE_AGENT_CSRF_SECRET: !Ref CsrfSecret

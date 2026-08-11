@@ -88,6 +88,23 @@ def test_store_rejects_an_existing_directory_visible_to_other_users(tmp_path) ->
         FileSystemAttachmentStore(root)
 
 
+def test_store_accepts_an_explicit_access_point_owner_uid(monkeypatch, tmp_path) -> None:
+    actual_owner = tmp_path.stat().st_uid
+    simulated_process_uid = actual_owner + 1
+    monkeypatch.setattr(os, "geteuid", lambda: simulated_process_uid)
+
+    with pytest.raises(AttachmentIntegrityError, match="not trusted"):
+        FileSystemAttachmentStore(tmp_path / "default-owner")
+
+    store = FileSystemAttachmentStore(
+        tmp_path / "access-point-owner",
+        trusted_owner_uid=actual_owner,
+    )
+    metadata = store.store(io.BytesIO(PDF), original_filename="receipt.pdf")
+
+    assert store.read(metadata.attachment_id).content == PDF
+
+
 @pytest.mark.parametrize(
     "filename",
     [

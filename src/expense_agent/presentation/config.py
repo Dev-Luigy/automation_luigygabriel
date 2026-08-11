@@ -162,6 +162,7 @@ class ReviewWebSettings:
     http_json_extractor_settings: HttpJsonExtractorSettings | None
     attachment_root: Path
     attachment_max_bytes: int
+    attachment_owner_uid: int | None
     build_id: str
 
     @property
@@ -206,6 +207,7 @@ class ReviewWebSettings:
             "extractor": extractor_payload,
             "attachment_root": str(self.attachment_root),
             "attachment_max_bytes": self.attachment_max_bytes,
+            "attachment_owner_uid": self.attachment_owner_uid,
         }
         encoded = json.dumps(
             payload,
@@ -291,6 +293,16 @@ class ReviewWebSettings:
             raise SecurityConfigurationError(
                 "EXPENSE_AGENT_ATTACHMENT_MAX_BYTES must be between 1024 and 10485760 bytes"
             )
+        attachment_owner_uid = _optional_environment_int(
+            "EXPENSE_AGENT_ATTACHMENT_OWNER_UID"
+        )
+        if (
+            attachment_owner_uid is not None
+            and not 0 <= attachment_owner_uid <= 4_294_967_294
+        ):
+            raise SecurityConfigurationError(
+                "EXPENSE_AGENT_ATTACHMENT_OWNER_UID must be a valid POSIX UID"
+            )
         settings = cls(
             database_path=database_path,
             sqlite_journal_mode=sqlite_journal_mode,
@@ -305,6 +317,7 @@ class ReviewWebSettings:
             http_json_extractor_settings=http_json_extractor_settings,
             attachment_root=attachment_root,
             attachment_max_bytes=attachment_max_bytes,
+            attachment_owner_uid=attachment_owner_uid,
             build_id=os.environ.get(
                 "EXPENSE_AGENT_BUILD_ID",
                 "local-unversioned",
@@ -331,6 +344,16 @@ def _environment_bool(name: str, *, default: bool) -> bool:
     if normalized == "false":
         return False
     raise SecurityConfigurationError(f"{name} must be true or false")
+
+
+def _optional_environment_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise SecurityConfigurationError(f"{name} must be an integer") from exc
 
 
 def _load_extractor_settings() -> tuple[ExtractorMode, HttpJsonExtractorSettings | None]:

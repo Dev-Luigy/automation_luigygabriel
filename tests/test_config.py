@@ -23,6 +23,7 @@ _EXTRACTOR_ENVIRONMENT = (
 _ATTACHMENT_ENVIRONMENT = (
     "EXPENSE_AGENT_ATTACHMENT_ROOT",
     "EXPENSE_AGENT_ATTACHMENT_MAX_BYTES",
+    "EXPENSE_AGENT_ATTACHMENT_OWNER_UID",
 )
 
 
@@ -61,6 +62,7 @@ def test_settings_load_explicit_security_boundaries(monkeypatch, tmp_path) -> No
     assert settings.http_json_extractor_settings is None
     assert settings.attachment_root == tmp_path / "attachments"
     assert settings.attachment_max_bytes == 4 * 1024 * 1024
+    assert settings.attachment_owner_uid is None
     assert settings.build_id == "local-unversioned"
     assert len(settings.configuration_hash) == 64
     assert settings.execution_identity.configuration_hash == settings.configuration_hash
@@ -97,11 +99,26 @@ def test_attachment_storage_settings_are_explicit_and_bounded(monkeypatch, tmp_p
     attachment_root = tmp_path / "durable-evidence"
     monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_ROOT", str(attachment_root))
     monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_MAX_BYTES", "2097152")
+    monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_OWNER_UID", "1000")
 
     settings = ReviewWebSettings.from_environment()
 
     assert settings.attachment_root == attachment_root
     assert settings.attachment_max_bytes == 2 * 1024 * 1024
+    assert settings.attachment_owner_uid == 1000
+
+
+@pytest.mark.parametrize("raw_uid", ("-1", "4294967295", "not-an-integer"))
+def test_attachment_owner_uid_is_strictly_validated(
+    monkeypatch,
+    tmp_path,
+    raw_uid: str,
+) -> None:
+    _configure_valid_environment(monkeypatch, tmp_path)
+    monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_OWNER_UID", raw_uid)
+
+    with pytest.raises(SecurityConfigurationError, match="OWNER_UID"):
+        ReviewWebSettings.from_environment()
 
 
 def test_environment_composition_initializes_private_attachment_store(

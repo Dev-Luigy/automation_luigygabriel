@@ -55,20 +55,40 @@ class FileSystemAttachmentStore(AttachmentStore):
         max_bytes: int = 10 * 1024 * 1024,
         chunk_size: int = 64 * 1024,
         id_factory: Callable[[], AttachmentId] = AttachmentId.new,
+        trusted_owner_uid: int | None = None,
     ) -> None:
         if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
             raise ValueError("max_bytes must be a positive integer")
         if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0:
             raise ValueError("chunk_size must be a positive integer")
+        if trusted_owner_uid is None:
+            trusted_owner_uid = os.geteuid()
+        if (
+            not isinstance(trusted_owner_uid, int)
+            or isinstance(trusted_owner_uid, bool)
+            or not 0 <= trusted_owner_uid <= 4_294_967_294
+        ):
+            raise ValueError("trusted_owner_uid must be a valid POSIX UID")
         self._root = Path(root).expanduser().resolve()
         self._objects = self._root / "objects"
         self._staging = self._root / ".staging"
         self._max_bytes = max_bytes
         self._chunk_size = chunk_size
         self._id_factory = id_factory
-        _ensure_private_directory(self._root, parents=True)
-        _ensure_private_directory(self._objects)
-        _ensure_private_directory(self._staging)
+        self._trusted_owner_uid = trusted_owner_uid
+        _ensure_private_directory(
+            self._root,
+            parents=True,
+            trusted_owner_uid=self._trusted_owner_uid,
+        )
+        _ensure_private_directory(
+            self._objects,
+            trusted_owner_uid=self._trusted_owner_uid,
+        )
+        _ensure_private_directory(
+            self._staging,
+            trusted_owner_uid=self._trusted_owner_uid,
+        )
 
     @property
     def max_bytes(self) -> int:
@@ -174,7 +194,10 @@ class FileSystemAttachmentStore(AttachmentStore):
     def _path_for(self, attachment_id: AttachmentId, *, create_shard: bool) -> Path:
         shard = self._objects / attachment_id.value[4:6]
         if create_shard:
-            _ensure_private_directory(shard)
+            _ensure_private_directory(
+                shard,
+                trusted_owner_uid=self._trusted_owner_uid,
+            )
         return shard / f"{attachment_id.value}.blob"
 
     def _read_envelope(
@@ -299,7 +322,12 @@ def _exclusive_file_descriptor(path: Path) -> int:
         raise AttachmentIntegrityError("staging object could not be created safely") from exc
 
 
-def _ensure_private_directory(path: Path, *, parents: bool = False) -> None:
+def _ensure_private_directory(
+    path: Path,
+    *,
+    trusted_owner_uid: int,
+    parents: bool = False,
+) -> None:
     try:
         path.mkdir(mode=0o700, parents=parents)
     except FileExistsError:
@@ -308,7 +336,7 @@ def _ensure_private_directory(path: Path, *, parents: bool = False) -> None:
     if (
         not stat.S_ISDIR(path_stat.st_mode)
         or stat.S_ISLNK(path_stat.st_mode)
-        or path_stat.st_uid != os.geteuid()
+        or path_stat.st_uid != trusted_owner_uid
         or stat.S_IMODE(path_stat.st_mode) & 0o077
     ):
         raise AttachmentIntegrityError("attachment store directory is not trusted")
