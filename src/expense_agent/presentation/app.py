@@ -2,11 +2,14 @@
 
 import hashlib
 import re
+import tempfile
+import unicodedata
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from time import monotonic_ns
 from typing import Annotated, Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import (
@@ -20,10 +23,11 @@ from fastapi import (
 )
 from fastapi import Path as ApiPath
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -50,6 +54,17 @@ from expense_agent.application import (
     ReviewQueueSort,
     ReviewService,
 )
+from expense_agent.application.attachments import (
+    AttachmentAlreadyExists,
+    AttachmentIntegrityError,
+    AttachmentMediaTypeMismatch,
+    AttachmentNotFound,
+    AttachmentStore,
+    AttachmentTooLarge,
+    InvalidAttachmentContent,
+    UnsupportedAttachmentMediaType,
+)
+from expense_agent.domain.attachments import AttachmentId, SafeAttachmentFilename
 from expense_agent.domain.audit import AuditActor
 from expense_agent.domain.decisions import AutomatedDecision, ReviewOutcome
 from expense_agent.domain.exceptions import DomainValidationError
@@ -65,6 +80,11 @@ from expense_agent.presentation.security import (
 STATIC_DIRECTORY = Path(__file__).with_name("static")
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+ATTACHMENT_ID_PATTERN = re.compile(r"^att_[0-9a-f]{32}$")
+MANAGED_ATTACHMENT_PREFIX = "evidence:"
+ALLOWED_ATTACHMENT_MEDIA_TYPES = frozenset(
+    {"application/pdf", "image/jpeg", "image/png"}
+)
 SUBMITTER_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 DECIMAL_AMOUNT_PATTERN = re.compile(r"^(?:0|[1-9]\d{0,15})(?:\.\d{1,2})?$")
 # Below 2**46 a binary64 ULP is at most 0.0078125, so rounding error remains
@@ -88,10 +108,15 @@ OPERATION_TYPES = {
     ("GET", "/"): "root_redirect",
     ("GET", "/reviews"): "reviewer_page_read",
     ("GET", "/api/session"): "reviewer_session_read",
+    ("POST", "/api/attachments"): "attachment_upload",
     ("POST", "/api/requests"): "reimbursement_submit",
     ("GET", "/api/requests/{request_id}"): "reimbursement_result_read",
     ("GET", "/api/reviews"): "review_queue_search",
     ("GET", "/api/reviews/{request_id}"): "review_case_read",
+    (
+        "GET",
+        "/api/reviews/{request_id}/attachments/{attachment_id}",
+    ): "review_attachment_read",
     ("GET", "/api/reviews/{request_id}/events"): "review_timeline_read",
     ("POST", "/api/reviews/{request_id}/decisions"): "review_decision_submit",
 }
@@ -323,6 +348,8 @@ def create_app(
     allowed_hosts: tuple[str, ...],
     processing_service: ProcessingService | None = None,
     operational_audit_recorder: OperationalAuditRecorder | None = None,
+    attachment_store: AttachmentStore | None = None,
+    attachment_max_bytes: int = 4 * 1024 * 1024,
 ) -> FastAPI:
     """Create an HTTP adapter around injected application/security ports."""
 
@@ -338,6 +365,12 @@ def create_app(
     audit_recorder = operational_audit_recorder or review_service.operational_audit_recorder
     if audit_recorder is None:
         raise ValueError("create_app requires a durable operational audit recorder")
+    if (
+        not isinstance(attachment_max_bytes, int)
+        or isinstance(attachment_max_bytes, bool)
+        or attachment_max_bytes <= 0
+    ):
+        raise ValueError("attachment_max_bytes must be a positive integer")
 
     @app.middleware("http")
     async def transport_and_browser_security(request: Request, call_next):
@@ -425,18 +458,11 @@ def create_app(
         request.state.operational_actor = ("reviewer", principal.reviewer_id)
         return principal
 
-    def require_csrf_and_same_origin(
+    def enforce_csrf_and_same_origin(
         request: Request,
-        reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
-        csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+        reviewer: ReviewerPrincipal,
+        csrf_token: str | None,
     ) -> ReviewerPrincipal:
-        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
-        if content_type != "application/json":
-            _mark_operational_error(request, "unsupported_media_type")
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail="Content-Type must be application/json",
-            )
         if request.headers.get("sec-fetch-site", "").lower() == "cross-site":
             _mark_operational_error(request, "cross_site_rejected")
             raise HTTPException(status_code=403, detail="Cross-site request blocked")
@@ -449,6 +475,34 @@ def create_app(
             _mark_operational_error(request, "csrf_rejected")
             raise HTTPException(status_code=403, detail="Invalid or expired CSRF token")
         return reviewer
+
+    def require_csrf_and_same_origin(
+        request: Request,
+        reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+    ) -> ReviewerPrincipal:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            _mark_operational_error(request, "unsupported_media_type")
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Content-Type must be application/json",
+            )
+        return enforce_csrf_and_same_origin(request, reviewer, csrf_token)
+
+    def require_attachment_csrf_and_same_origin(
+        request: Request,
+        reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+    ) -> ReviewerPrincipal:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type not in ALLOWED_ATTACHMENT_MEDIA_TYPES:
+            _mark_operational_error(request, "unsupported_media_type")
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Content-Type must be image/jpeg, image/png, or application/pdf",
+            )
+        return enforce_csrf_and_same_origin(request, reviewer, csrf_token)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -527,6 +581,124 @@ def create_app(
             "csrf_token": csrf.issue(reviewer.reviewer_id),
         }
 
+    @app.post("/api/attachments", status_code=201)
+    async def upload_attachment(
+        request: Request,
+        _actor: Annotated[
+            ReviewerPrincipal,
+            Depends(require_attachment_csrf_and_same_origin),
+        ],
+        original_filename: Annotated[
+            str | None,
+            Header(alias="X-Attachment-Filename"),
+        ] = None,
+    ) -> JSONResponse:
+        store = _require_attachment_store(attachment_store)
+        if original_filename is None:
+            _mark_operational_error(request, "missing_filename")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="X-Attachment-Filename is required",
+            )
+        validated_filename = SafeAttachmentFilename(original_filename).value
+
+        declared_length = request.headers.get("content-length")
+        if declared_length is not None:
+            try:
+                content_length = int(declared_length)
+            except ValueError as exc:
+                _mark_operational_error(request, "invalid_content_length")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Content-Length must be a non-negative integer",
+                ) from exc
+            if content_length < 0:
+                _mark_operational_error(request, "invalid_content_length")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Content-Length must be a non-negative integer",
+                )
+            if content_length > attachment_max_bytes:
+                _mark_operational_error(request, "attachment_too_large")
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail="Attachment exceeds the configured byte limit",
+                )
+
+        declared_media_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        with tempfile.SpooledTemporaryFile(
+            max_size=min(1024 * 1024, attachment_max_bytes),
+            mode="w+b",
+        ) as staged:
+            received = 0
+            async for chunk in request.stream():
+                received += len(chunk)
+                if received > attachment_max_bytes:
+                    _mark_operational_error(request, "attachment_too_large")
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail="Attachment exceeds the configured byte limit",
+                    )
+                staged.write(chunk)
+            staged.seek(0)
+            try:
+                metadata = await run_in_threadpool(
+                    store.store,
+                    staged,
+                    original_filename=validated_filename,
+                    declared_media_type=declared_media_type,
+                )
+            except AttachmentTooLarge as exc:
+                _mark_operational_error(request, "attachment_too_large")
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail="Attachment exceeds the configured byte limit",
+                ) from exc
+            except (UnsupportedAttachmentMediaType, AttachmentMediaTypeMismatch) as exc:
+                _mark_operational_error(request, "unsupported_attachment")
+                raise HTTPException(
+                    status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                    detail="Attachment bytes do not match an allowlisted media type",
+                ) from exc
+            except InvalidAttachmentContent as exc:
+                _mark_operational_error(request, "invalid_attachment")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Attachment content is invalid",
+                ) from exc
+            except AttachmentAlreadyExists as exc:
+                _mark_operational_error(request, "attachment_conflict")
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Attachment identity collision",
+                ) from exc
+            except AttachmentIntegrityError as exc:
+                _mark_operational_error(request, "attachment_storage_failure")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Attachment could not be stored safely",
+                ) from exc
+
+        _set_operational_metadata(
+            request,
+            attachment_id=metadata.attachment_id.value,
+            byte_size=metadata.byte_size,
+            media_type=metadata.media_type.value,
+            sha256=metadata.sha256,
+        )
+        reference = f"{MANAGED_ATTACHMENT_PREFIX}{metadata.attachment_id.value}"
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={
+                "attachment_id": metadata.attachment_id.value,
+                "reference": reference,
+                "sha256": metadata.sha256,
+                "byte_size": metadata.byte_size,
+                "media_type": metadata.media_type.value,
+                "original_filename": metadata.original_filename.value,
+            },
+        )
+
     @app.post("/api/requests")
     def submit_request(
         request: Request,
@@ -582,6 +754,60 @@ def create_app(
         return JSONResponse(
             content=_case_details(details),
             headers={"ETag": _etag(details)},
+        )
+
+    @app.get("/api/reviews/{request_id}/attachments/{attachment_id}")
+    def review_attachment(
+        request: Request,
+        request_id: Annotated[
+            str,
+            ApiPath(min_length=1, max_length=128, pattern=REQUEST_ID_PATTERN.pattern),
+        ],
+        attachment_id: Annotated[
+            str,
+            ApiPath(pattern=ATTACHMENT_ID_PATTERN.pattern),
+        ],
+        _reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+    ) -> Response:
+        store = _require_attachment_store(attachment_store)
+        details = review_service.get(request_id)
+        evidence_reference = f"{MANAGED_ATTACHMENT_PREFIX}{attachment_id}"
+        _set_operational_metadata(request, attachment_id=attachment_id)
+        if not any(
+            attachment.location == evidence_reference for attachment in details.attachments
+        ):
+            _mark_operational_error(request, "attachment_not_in_case")
+            raise HTTPException(status_code=404, detail="Attachment not found for review case")
+        try:
+            stored = store.read(AttachmentId(attachment_id))
+        except AttachmentNotFound as exc:
+            _mark_operational_error(request, "attachment_not_found")
+            raise HTTPException(status_code=404, detail="Attachment not found for review case") from exc
+        except AttachmentIntegrityError as exc:
+            _mark_operational_error(request, "attachment_integrity_failure")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Attachment integrity verification failed",
+            ) from exc
+
+        metadata = stored.metadata
+        _set_operational_metadata(
+            request,
+            attachment_id=metadata.attachment_id.value,
+            byte_size=metadata.byte_size,
+            media_type=metadata.media_type.value,
+            sha256=metadata.sha256,
+        )
+        return Response(
+            content=stored.content,
+            media_type=metadata.media_type.value,
+            headers={
+                "Content-Disposition": _content_disposition(
+                    metadata.original_filename.value
+                ),
+                "ETag": f'"sha256-{metadata.sha256}"',
+                "X-Content-SHA256": metadata.sha256,
+            },
         )
 
     @app.get("/api/reviews/{request_id}/events")
@@ -731,7 +957,10 @@ def _case_details(details: ReviewCaseDetails) -> dict[str, Any]:
         "status": details.status.value,
         "review_status": details.review_status.value,
         "version": details.version,
-        "attachments": [{"location": attachment.location} for attachment in details.attachments],
+        "attachments": [
+            _attachment_projection(details.request_id, attachment)
+            for attachment in details.attachments
+        ],
         "extraction": _extraction(details.extraction),
         "problems": [
             {
@@ -758,6 +987,25 @@ def _case_details(details: ReviewCaseDetails) -> dict[str, Any]:
     else:
         payload["human_decision"] = None
     return payload
+
+
+def _attachment_projection(
+    request_id: str,
+    attachment: AttachmentReference,
+) -> dict[str, str]:
+    location = attachment.location
+    if location.startswith(MANAGED_ATTACHMENT_PREFIX):
+        attachment_id = location.removeprefix(MANAGED_ATTACHMENT_PREFIX)
+        if ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is not None:
+            return {
+                "location": location,
+                "kind": "managed_evidence",
+                "attachment_id": attachment_id,
+                "open_url": (
+                    f"/api/reviews/{quote(request_id, safe='')}/attachments/{attachment_id}"
+                ),
+            }
+    return {"location": location, "kind": "legacy_reference"}
 
 
 def _extraction(extraction: ExtractionResult | None) -> dict[str, Any] | None:
@@ -955,7 +1203,7 @@ def _operational_outcome(response_status: int) -> OperationalAuditOutcome:
 def _operational_metadata(
     request: Request,
     raised: BaseException | None,
-) -> dict[str, str]:
+) -> dict[str, str | int | bool]:
     metadata = {
         "correlation_source": getattr(
             request.state,
@@ -969,7 +1217,44 @@ def _operational_metadata(
     if raised is not None:
         exception_type = re.sub(r"[^A-Za-z0-9_.-]", "_", type(raised).__name__)
         metadata["exception_type"] = (exception_type or "Exception")[:256]
+    additional = getattr(request.state, "operational_metadata", None)
+    if isinstance(additional, dict):
+        for key, value in additional.items():
+            if isinstance(key, str) and isinstance(value, (str, int, bool)):
+                metadata[key] = value
     return metadata
+
+
+def _set_operational_metadata(
+    request: Request,
+    **metadata: str | int | bool,
+) -> None:
+    request.state.operational_metadata = dict(metadata)
+
+
+def _require_attachment_store(store: AttachmentStore | None) -> AttachmentStore:
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Attachment evidence storage is unavailable",
+        )
+    return store
+
+
+def _content_disposition(filename: str) -> str:
+    ascii_filename = (
+        unicodedata.normalize("NFKD", filename)
+        .encode("ascii", errors="ignore")
+        .decode("ascii")
+    )
+    ascii_filename = re.sub(r"[^A-Za-z0-9 ._()-]", "_", ascii_filename).strip()
+    if not ascii_filename:
+        ascii_filename = "attachment"
+    encoded_filename = quote(filename, safe="")
+    return (
+        f'inline; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{encoded_filename}"
+    )
 
 
 def _receipt_facts(facts: ReceiptFacts | None) -> dict[str, Any] | None:

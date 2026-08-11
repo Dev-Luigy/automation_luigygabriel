@@ -38,6 +38,8 @@ def test_sam_sandbox_keeps_secrets_out_of_source_and_marks_safety_boundary() -> 
     assert "Encrypted: true" in template
     assert template.count("DeletionPolicy: Retain") == 1
     assert "EXPENSE_AGENT_SQLITE_JOURNAL_MODE: DELETE" in template
+    assert "EXPENSE_AGENT_ATTACHMENT_ROOT: /mnt/expense-agent/attachments" in template
+    assert 'EXPENSE_AGENT_ATTACHMENT_MAX_BYTES: "4194304"' in template
     assert "ReservedConcurrentExecutions: 4" in template
     assert "ASSESSMENT SANDBOX ONLY" in template
     assert "password_hash\":\"${ReviewerPasswordHash}" in template

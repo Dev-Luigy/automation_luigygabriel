@@ -1628,11 +1628,28 @@ td.numeric {
   border-radius: 0.35rem;
 }
 
-.attachment-item > span:last-child {
+.attachment-reference {
+  flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.68rem;
+}
+
+.attachment-action {
+  flex: 0 0 auto;
+  padding: 0.42rem 0.55rem;
+  color: var(--blue-700);
+  background: var(--blue-100);
+  border-radius: 0.35rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.attachment-action:hover,
+.attachment-action:focus-visible {
+  text-decoration: underline;
 }
 
 .decision-panel {

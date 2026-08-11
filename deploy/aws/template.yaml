@@ -200,6 +200,8 @@ Resources:
       Environment:
         Variables:
           EXPENSE_AGENT_ALLOWED_HOSTS: !Sub "*.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+          EXPENSE_AGENT_ATTACHMENT_MAX_BYTES: "4194304"
+          EXPENSE_AGENT_ATTACHMENT_ROOT: /mnt/expense-agent/attachments
           EXPENSE_AGENT_CSRF_SECRET: !Ref CsrfSecret
           EXPENSE_AGENT_DATABASE_PATH: /mnt/expense-agent/expense-agent.sqlite3
           EXPENSE_AGENT_REQUIRE_HTTPS: "true"

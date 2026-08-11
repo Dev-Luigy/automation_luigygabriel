@@ -30,6 +30,8 @@ _HTTP_JSON_EXTRACTOR_ENVIRONMENT = (
     "EXPENSE_AGENT_EXTRACTOR_PARAMETERS_JSON",
 )
 _MAX_PARAMETERS_JSON_BYTES = 16 * 1024
+_DEFAULT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024
+_MAX_ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024
 
 
 class ExtractorMode(str, Enum):
@@ -155,6 +157,8 @@ class ReviewWebSettings:
     forwarded_allow_ips: str
     extractor_mode: ExtractorMode
     http_json_extractor_settings: HttpJsonExtractorSettings | None
+    attachment_root: Path
+    attachment_max_bytes: int
 
     @classmethod
     def from_environment(cls) -> ReviewWebSettings:
@@ -205,6 +209,21 @@ class ReviewWebSettings:
                 "forwarded proxy IPs must be explicit and must not be a wildcard"
             )
         extractor_mode, http_json_extractor_settings = _load_extractor_settings()
+        attachment_root_raw = os.environ.get("EXPENSE_AGENT_ATTACHMENT_ROOT")
+        if attachment_root_raw is None:
+            attachment_root = database_path.parent / "attachments"
+        elif not attachment_root_raw.strip():
+            raise SecurityConfigurationError("EXPENSE_AGENT_ATTACHMENT_ROOT must not be blank")
+        else:
+            attachment_root = Path(attachment_root_raw.strip())
+        attachment_max_bytes = _environment_int(
+            "EXPENSE_AGENT_ATTACHMENT_MAX_BYTES",
+            default=_DEFAULT_ATTACHMENT_MAX_BYTES,
+        )
+        if not 1_024 <= attachment_max_bytes <= _MAX_ATTACHMENT_MAX_BYTES:
+            raise SecurityConfigurationError(
+                "EXPENSE_AGENT_ATTACHMENT_MAX_BYTES must be between 1024 and 10485760 bytes"
+            )
         return cls(
             database_path=database_path,
             sqlite_journal_mode=sqlite_journal_mode,
@@ -217,6 +236,8 @@ class ReviewWebSettings:
             forwarded_allow_ips=forwarded_allow_ips,
             extractor_mode=extractor_mode,
             http_json_extractor_settings=http_json_extractor_settings,
+            attachment_root=attachment_root,
+            attachment_max_bytes=attachment_max_bytes,
         )
 
 

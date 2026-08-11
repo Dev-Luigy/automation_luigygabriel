@@ -7,7 +7,7 @@ from expense_agent.infrastructure.extraction import (
     HttpJsonReceiptExtractor,
 )
 from expense_agent.presentation.config import ExtractorMode, ReviewWebSettings
-from expense_agent.presentation.main import create_receipt_extractor
+from expense_agent.presentation.main import create_environment_app, create_receipt_extractor
 from expense_agent.presentation.security import SecurityConfigurationError, hash_password
 
 _EXTRACTOR_ENVIRONMENT = (
@@ -20,10 +20,14 @@ _EXTRACTOR_ENVIRONMENT = (
     "EXPENSE_AGENT_EXTRACTOR_MAX_RESPONSE_BYTES",
     "EXPENSE_AGENT_EXTRACTOR_PARAMETERS_JSON",
 )
+_ATTACHMENT_ENVIRONMENT = (
+    "EXPENSE_AGENT_ATTACHMENT_ROOT",
+    "EXPENSE_AGENT_ATTACHMENT_MAX_BYTES",
+)
 
 
 def _configure_valid_environment(monkeypatch, tmp_path) -> None:
-    for name in _EXTRACTOR_ENVIRONMENT:
+    for name in (*_EXTRACTOR_ENVIRONMENT, *_ATTACHMENT_ENVIRONMENT):
         monkeypatch.delenv(name, raising=False)
     reviewers = [
         {
@@ -55,6 +59,36 @@ def test_settings_load_explicit_security_boundaries(monkeypatch, tmp_path) -> No
     assert settings.reviewers[0].reviewer_id == "directory:7"
     assert settings.extractor_mode is ExtractorMode.DETERMINISTIC
     assert settings.http_json_extractor_settings is None
+    assert settings.attachment_root == tmp_path / "attachments"
+    assert settings.attachment_max_bytes == 4 * 1024 * 1024
+
+
+def test_attachment_storage_settings_are_explicit_and_bounded(monkeypatch, tmp_path) -> None:
+    _configure_valid_environment(monkeypatch, tmp_path)
+    attachment_root = tmp_path / "durable-evidence"
+    monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_ROOT", str(attachment_root))
+    monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_MAX_BYTES", "2097152")
+
+    settings = ReviewWebSettings.from_environment()
+
+    assert settings.attachment_root == attachment_root
+    assert settings.attachment_max_bytes == 2 * 1024 * 1024
+
+
+def test_environment_composition_initializes_private_attachment_store(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    _configure_valid_environment(monkeypatch, tmp_path)
+    attachment_root = tmp_path / "composed-evidence"
+    monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_ROOT", str(attachment_root))
+    monkeypatch.setenv("EXPENSE_AGENT_ATTACHMENT_MAX_BYTES", "65536")
+
+    app = create_environment_app()
+
+    assert (attachment_root / "objects").is_dir()
+    assert (attachment_root / ".staging").is_dir()
+    assert any(route.path == "/api/attachments" for route in app.routes)
 
 
 def test_default_composition_remains_offline_and_deterministic(monkeypatch, tmp_path) -> None:
@@ -234,6 +268,10 @@ def test_extractor_settings_fail_fast_on_invalid_values(
         ("EXPENSE_AGENT_ALLOWED_HOSTS", "*", "bare wildcard"),
         ("EXPENSE_AGENT_FORWARDED_ALLOW_IPS", "*", "must not be a wildcard"),
         ("EXPENSE_AGENT_SQLITE_JOURNAL_MODE", "MEMORY", "must be WAL or DELETE"),
+        ("EXPENSE_AGENT_ATTACHMENT_MAX_BYTES", "not-an-int", "must be an integer"),
+        ("EXPENSE_AGENT_ATTACHMENT_ROOT", "   ", "must not be blank"),
+        ("EXPENSE_AGENT_ATTACHMENT_MAX_BYTES", "1023", "between 1024 and 10485760"),
+        ("EXPENSE_AGENT_ATTACHMENT_MAX_BYTES", "10485761", "between 1024 and 10485760"),
     ),
 )
 def test_settings_fail_closed_on_unsafe_values(

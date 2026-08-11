@@ -95,6 +95,11 @@ def test_review_console_preserves_evidence_and_uses_safe_browser_state() -> None
     assert "body?.detail" not in javascript
     assert 'data-i18n="originalLanguage"' in html
     assert 'data-i18n="attachmentLimitation"' in html
+    assert 'attachment?.kind === "managed_evidence"' in javascript
+    assert "action.href = attachment.open_url" in javascript
+    assert 'action.rel = "noopener"' in javascript
+    assert 'action.target = "_blank"' in javascript
+    assert "innerHTML" not in javascript
 
 
 def test_review_console_blocks_approval_when_a_mandatory_rejection_rule_applies() -> None:

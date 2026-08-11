@@ -7,6 +7,7 @@ from fastapi import FastAPI
 
 from expense_agent.application import ProcessingService, ReviewService
 from expense_agent.application.extraction import ReceiptExtractor
+from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 from expense_agent.infrastructure.extraction import (
     DeterministicReceiptExtractor,
     HttpJsonExtractorConfig,
@@ -57,6 +58,10 @@ def create_environment_app() -> FastAPI:
         settings.database_path,
         journal_mode=settings.sqlite_journal_mode,
     )
+    attachment_store = FileSystemAttachmentStore(
+        settings.attachment_root,
+        max_bytes=settings.attachment_max_bytes,
+    )
     return create_app(
         review_service=ReviewService(repository),
         processing_service=ProcessingService(
@@ -67,6 +72,8 @@ def create_environment_app() -> FastAPI:
         csrf=CsrfProtector(settings.csrf_secret),
         require_https=settings.require_https,
         allowed_hosts=settings.allowed_hosts,
+        attachment_store=attachment_store,
+        attachment_max_bytes=settings.attachment_max_bytes,
     )
 
 

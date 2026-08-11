@@ -177,7 +177,8 @@ const translations = {
     explanation: "Explanation",
     originalFiles: "Original files",
     attachments: "Attachments",
-    attachmentLimitation: "This assessment records file references only. Authorized preview and download are not implemented yet.",
+    attachmentLimitation: "Managed evidence can be opened through an authenticated, audited route. Legacy references remain text-only.",
+    openAttachment: "Open / download",
     authoritativeAction: "Authoritative human action",
     recordDecision: "Record your decision",
     decisionAuditNotice: "Your authenticated identity, rationale, timestamp, and case version will be written to the immutable audit trail.",
@@ -422,7 +423,8 @@ const translations = {
     explanation: "Explicação",
     originalFiles: "Arquivos originais",
     attachments: "Anexos",
-    attachmentLimitation: "Este assessment registra apenas as referências dos arquivos. A visualização e o download autorizados ainda não foram implementados.",
+    attachmentLimitation: "Evidências gerenciadas podem ser abertas por uma rota autenticada e auditada. Referências legadas permanecem apenas como texto.",
+    openAttachment: "Abrir / baixar",
     authoritativeAction: "Ação humana autoritativa",
     recordDecision: "Registrar sua decisão",
     decisionAuditNotice: "Sua identidade autenticada, justificativa, horário e versão do caso serão gravados na trilha de auditoria imutável.",
@@ -667,7 +669,8 @@ const translations = {
     explanation: "Explicación",
     originalFiles: "Archivos originales",
     attachments: "Adjuntos",
-    attachmentLimitation: "Esta evaluación solo registra las referencias de los archivos. La vista previa y la descarga autorizadas aún no están implementadas.",
+    attachmentLimitation: "La evidencia gestionada puede abrirse mediante una ruta autenticada y auditada. Las referencias heredadas permanecen como texto.",
+    openAttachment: "Abrir / descargar",
     authoritativeAction: "Acción humana autoritativa",
     recordDecision: "Registrar tu decisión",
     decisionAuditNotice: "Tu identidad autenticada, justificación, hora y versión del caso se guardarán en el registro de auditoría inmutable.",
@@ -1847,12 +1850,26 @@ function renderAttachments(attachments) {
   elements["attachment-count-summary"].textContent = String(attachments.length);
   for (const attachment of attachments) {
     const item = textElement("li", null, "attachment-item");
-    item.append(textElement("span", "▧"), textElement("span", attachment.location ?? attachment));
+    const location = attachment?.location ?? attachment;
+    item.append(
+      textElement("span", "▧"),
+      textElement("span", location, "attachment-reference"),
+    );
+    if (attachment?.kind === "managed_evidence" && typeof attachment?.open_url === "string") {
+      const action = textElement("a", t("openAttachment"), "attachment-action");
+      action.href = attachment.open_url;
+      action.target = "_blank";
+      action.rel = "noopener";
+      item.append(action);
+    }
     elements["attachment-list"].append(item);
   }
   if (!attachments.length) {
     const item = textElement("li", null, "attachment-item");
-    item.append(textElement("span", "▧"), textElement("span", t("noAttachments")));
+    item.append(
+      textElement("span", "▧"),
+      textElement("span", t("noAttachments"), "attachment-reference"),
+    );
     elements["attachment-list"].append(item);
   }
 }
