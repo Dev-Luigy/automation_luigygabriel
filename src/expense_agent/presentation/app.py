@@ -106,6 +106,7 @@ CONTENT_SECURITY_POLICY = (
 )
 OPERATION_TYPES = {
     ("GET", "/"): "root_redirect",
+    ("GET", "/submit"): "submitter_page_read",
     ("GET", "/reviews"): "reviewer_page_read",
     ("GET", "/api/session"): "reviewer_session_read",
     ("POST", "/api/attachments"): "attachment_upload",
@@ -436,7 +437,7 @@ def create_app(
                 )
             )
 
-    def current_reviewer(
+    def current_principal(
         request: Request,
         credentials: Annotated[HTTPBasicCredentials | None, Depends(basic)],
     ) -> ReviewerPrincipal:
@@ -451,12 +452,42 @@ def create_app(
             _mark_operational_error(request, "authentication_failed")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Valid reviewer credentials are required",
-                headers={"WWW-Authenticate": 'Basic realm="Expense Agent review", charset="UTF-8"'},
+                detail="Valid Expense Agent credentials are required",
+                headers={"WWW-Authenticate": 'Basic realm="Expense Agent", charset="UTF-8"'},
             )
         request.state.operational_authentication = OperationalAuthenticationOutcome.SUCCEEDED
-        request.state.operational_actor = ("reviewer", principal.reviewer_id)
+        request.state.operational_actor = ("authenticated_principal", principal.reviewer_id)
         return principal
+
+    def require_capabilities(
+        request: Request,
+        principal: ReviewerPrincipal,
+        *capabilities: str,
+    ) -> ReviewerPrincipal:
+        if any(principal.can(capability) for capability in capabilities):
+            _add_operational_metadata(request, access_control="granted")
+            return principal
+        _mark_operational_error(request, "authorization_denied")
+        _add_operational_metadata(request, access_control="denied")
+        raise HTTPException(status_code=403, detail="Insufficient permission")
+
+    def current_submitter(
+        request: Request,
+        principal: Annotated[ReviewerPrincipal, Depends(current_principal)],
+    ) -> ReviewerPrincipal:
+        return require_capabilities(request, principal, "submit")
+
+    def current_review_reader(
+        request: Request,
+        principal: Annotated[ReviewerPrincipal, Depends(current_principal)],
+    ) -> ReviewerPrincipal:
+        return require_capabilities(request, principal, "review", "audit")
+
+    def current_reviewer(
+        request: Request,
+        principal: Annotated[ReviewerPrincipal, Depends(current_principal)],
+    ) -> ReviewerPrincipal:
+        return require_capabilities(request, principal, "review")
 
     def enforce_csrf_and_same_origin(
         request: Request,
@@ -490,9 +521,23 @@ def create_app(
             )
         return enforce_csrf_and_same_origin(request, reviewer, csrf_token)
 
+    def require_submitter_csrf_and_same_origin(
+        request: Request,
+        submitter: Annotated[ReviewerPrincipal, Depends(current_submitter)],
+        csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+    ) -> ReviewerPrincipal:
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+        if content_type != "application/json":
+            _mark_operational_error(request, "unsupported_media_type")
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Content-Type must be application/json",
+            )
+        return enforce_csrf_and_same_origin(request, submitter, csrf_token)
+
     def require_attachment_csrf_and_same_origin(
         request: Request,
-        reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        submitter: Annotated[ReviewerPrincipal, Depends(current_submitter)],
         csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
     ) -> ReviewerPrincipal:
         content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
@@ -502,7 +547,7 @@ def create_app(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail="Content-Type must be image/jpeg, image/png, or application/pdf",
             )
-        return enforce_csrf_and_same_origin(request, reviewer, csrf_token)
+        return enforce_csrf_and_same_origin(request, submitter, csrf_token)
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -559,26 +604,44 @@ def create_app(
         )
 
     @app.get("/", include_in_schema=False)
-    def root() -> RedirectResponse:
-        return RedirectResponse(url="/reviews", status_code=307)
+    def root(
+        request: Request,
+        principal: Annotated[ReviewerPrincipal, Depends(current_principal)],
+    ) -> RedirectResponse:
+        if principal.can("review") or principal.can("audit"):
+            _add_operational_metadata(request, access_control="granted")
+            return RedirectResponse(url="/reviews", status_code=307)
+        require_capabilities(request, principal, "submit")
+        return RedirectResponse(url="/submit", status_code=307)
+
+    @app.get("/submit", include_in_schema=False)
+    def submitter_page(
+        _submitter: Annotated[ReviewerPrincipal, Depends(current_submitter)],
+    ) -> FileResponse:
+        return FileResponse(STATIC_DIRECTORY / "submit.html", media_type="text/html")
 
     @app.get("/reviews", include_in_schema=False)
     def reviews_page(
-        _reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> FileResponse:
         return FileResponse(STATIC_DIRECTORY / "reviews.html", media_type="text/html")
 
     @app.get("/api/session")
     def session(
-        reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        request: Request,
+        principal: Annotated[ReviewerPrincipal, Depends(current_principal)],
     ) -> dict[str, Any]:
+        _add_operational_metadata(request, access_control="granted")
+        identity = {
+            "reviewer_id": principal.reviewer_id,
+            "email": principal.email,
+            "display_name": principal.display_name,
+            "roles": sorted(role.value for role in principal.roles),
+        }
         return {
-            "reviewer": {
-                "reviewer_id": reviewer.reviewer_id,
-                "email": reviewer.email,
-                "display_name": reviewer.display_name,
-            },
-            "csrf_token": csrf.issue(reviewer.reviewer_id),
+            "principal": identity,
+            "reviewer": identity,
+            "csrf_token": csrf.issue(principal.reviewer_id),
         }
 
     @app.post("/api/attachments", status_code=201)
@@ -703,14 +766,26 @@ def create_app(
     def submit_request(
         request: Request,
         command: IntakeRequest,
-        actor: Annotated[ReviewerPrincipal, Depends(require_csrf_and_same_origin)],
+        actor: Annotated[
+            ReviewerPrincipal,
+            Depends(require_submitter_csrf_and_same_origin),
+        ],
     ) -> JSONResponse:
         service = _require_processing_service(processing_service)
+        if not actor.can("admin") and command.submitted_by.casefold() != actor.email.casefold():
+            _mark_operational_error(request, "submitter_identity_mismatch")
+            _add_operational_metadata(request, access_control="denied")
+            raise HTTPException(
+                status_code=403,
+                detail="submitted_by must match the authenticated principal",
+            )
+        submission = command.to_submission()
+        _verify_managed_attachments(request, submission, attachment_store)
         correlation_id = _correlation_id(request)
         outcome = service.process(
-            command.to_submission(),
+            submission,
             actor=AuditActor(
-                actor_type="authenticated_caller",
+                actor_type="submitter",
                 actor_id=actor.reviewer_id,
             ),
             correlation_id=correlation_id,
@@ -729,26 +804,38 @@ def create_app(
 
     @app.get("/api/requests/{request_id}")
     def request_result(
+        request: Request,
         request_id: Annotated[
             str,
             ApiPath(min_length=1, max_length=128, pattern=REQUEST_ID_PATTERN.pattern),
         ],
-        _actor: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        principal: Annotated[ReviewerPrincipal, Depends(current_principal)],
     ) -> dict[str, Any]:
         service = _require_processing_service(processing_service)
-        return _request_result(service.get_result(request_id))
+        result = service.get_result(request_id)
+        if not (
+            principal.can("review")
+            or principal.can("audit")
+            or result.submission.submitted_by.casefold() == principal.email.casefold()
+        ):
+            _mark_operational_error(request, "object_authorization_denied")
+            _add_operational_metadata(request, access_control="denied")
+            # Do not reveal whether another submitter's opaque request ID exists.
+            raise HTTPException(status_code=404, detail="Request not found")
+        _add_operational_metadata(request, access_control="granted")
+        return _request_result(result)
 
     @app.get("/api/reviews")
     def pending_reviews(
         query: Annotated[ReviewQueueRequest, Query()],
-        _reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> dict[str, Any]:
         return _queue_page(review_service.search_pending(query.to_query()))
 
     @app.get("/api/reviews/{request_id}")
     def review_details(
         request_id: str,
-        _reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> JSONResponse:
         details = review_service.get(request_id)
         return JSONResponse(
@@ -767,7 +854,7 @@ def create_app(
             str,
             ApiPath(pattern=ATTACHMENT_ID_PATTERN.pattern),
         ],
-        _reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> Response:
         store = _require_attachment_store(attachment_store)
         details = review_service.get(request_id)
@@ -814,7 +901,7 @@ def create_app(
     def review_events(
         request_id: str,
         query: Annotated[ReviewEventRequest, Query()],
-        _reviewer: Annotated[ReviewerPrincipal, Depends(current_reviewer)],
+        _reader: Annotated[ReviewerPrincipal, Depends(current_review_reader)],
     ) -> dict[str, Any]:
         return _event_page(request_id, review_service.list_events(request_id, query.to_query()))
 
@@ -832,6 +919,13 @@ def create_app(
                 detail="If-Match is required",
             )
         details = review_service.get(request_id)
+        if details.submission.submitted_by.casefold() == reviewer.email.casefold():
+            _mark_operational_error(request, "self_review_denied")
+            _add_operational_metadata(request, access_control="denied")
+            raise HTTPException(
+                status_code=403,
+                detail="A submitter cannot decide their own reimbursement",
+            )
         if if_match != _etag(details):
             raise HTTPException(
                 status_code=status.HTTP_412_PRECONDITION_FAILED,
@@ -1229,7 +1323,58 @@ def _set_operational_metadata(
     request: Request,
     **metadata: str | int | bool,
 ) -> None:
-    request.state.operational_metadata = dict(metadata)
+    _add_operational_metadata(request, **metadata)
+
+
+def _add_operational_metadata(
+    request: Request,
+    **metadata: str | int | bool,
+) -> None:
+    existing = getattr(request.state, "operational_metadata", None)
+    merged = dict(existing) if isinstance(existing, dict) else {}
+    merged.update(metadata)
+    request.state.operational_metadata = merged
+
+
+def _verify_managed_attachments(
+    request: Request,
+    submission: ReimbursementSubmission,
+    store: AttachmentStore | None,
+) -> None:
+    managed_references = tuple(
+        attachment.location
+        for attachment in submission.attachments
+        if attachment.location.startswith(MANAGED_ATTACHMENT_PREFIX)
+    )
+    if not managed_references:
+        return
+    managed_store = _require_attachment_store(store)
+    for reference in managed_references:
+        attachment_id = reference.removeprefix(MANAGED_ATTACHMENT_PREFIX)
+        if ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None:
+            _mark_operational_error(request, "invalid_managed_attachment_reference")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Managed attachment reference is invalid",
+            )
+        try:
+            managed_store.read(AttachmentId(attachment_id))
+        except AttachmentNotFound as exc:
+            _mark_operational_error(request, "managed_attachment_not_found")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Managed attachment reference does not exist",
+            ) from exc
+        except AttachmentIntegrityError as exc:
+            _mark_operational_error(request, "attachment_integrity_failure")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Attachment integrity verification failed",
+            ) from exc
+    _add_operational_metadata(
+        request,
+        managed_attachment_count=len(managed_references),
+    )
 
 
 def _require_attachment_store(store: AttachmentStore | None) -> AttachmentStore:

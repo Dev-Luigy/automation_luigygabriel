@@ -32,6 +32,7 @@ from expense_agent.presentation.app import create_app
 from expense_agent.presentation.security import (
     BasicAuthenticator,
     CsrfProtector,
+    PrincipalRole,
     ReviewerCredential,
     hash_password,
 )
@@ -170,6 +171,7 @@ def _credential() -> ReviewerCredential:
         email="authenticated.employee@example.com",
         display_name="Authenticated Employee",
         password_hash=hash_password("secret-pass", iterations=100_000),
+        roles=frozenset({PrincipalRole.ADMIN}),
     )
 
 
@@ -276,7 +278,7 @@ def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
 
     assert service.submissions[0].submitted_by == "ana.silva@company.com"
     assert service.actors == [
-        AuditActor(actor_type="authenticated_caller", actor_id="directory:42")
+        AuditActor(actor_type="submitter", actor_id="directory:42")
     ]
     serialized = created.text + fetched.text
     assert "raw_ocr_text" not in serialized
@@ -507,7 +509,7 @@ def test_real_sqlite_http_pipeline_is_idempotent_audited_and_queryable(tmp_path:
             """
         ).fetchall()
     assert reimbursement == ("ana.silva@company.com", "auto_approved", 3)
-    assert received_actor == ("authenticated_caller", "directory:42")
+    assert received_actor == ("submitter", "directory:42")
     assert attempts is not None and attempts[0] == 1 and attempts[1] > 0
     assert {row[0] for row in replay_events} == {
         "reimbursement_intake_replayed",

@@ -263,6 +263,7 @@ def test_managed_evidence_is_projected_and_downloaded_only_through_its_case(
     )
     assert successful_download[3] == "directory:42"
     assert json.loads(successful_download[5]) == {
+        "access_control": "granted",
         "attachment_id": attachment_id,
         "byte_size": len(PDF_BYTES),
         "correlation_source": "generated",

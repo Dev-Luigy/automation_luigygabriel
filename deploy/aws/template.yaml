@@ -208,7 +208,7 @@ Resources:
           EXPENSE_AGENT_REVIEWERS_JSON: !Sub >-
             [{"username":"${ReviewerUsername}","reviewer_id":"${ReviewerId}",
             "email":"${ReviewerEmail}","display_name":"${ReviewerDisplayName}",
-            "password_hash":"${ReviewerPasswordHash}"}]
+            "password_hash":"${ReviewerPasswordHash}","roles":["admin"]}]
           EXPENSE_AGENT_SQLITE_JOURNAL_MODE: DELETE
       Events:
         DefaultRoute:

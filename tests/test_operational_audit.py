@@ -18,6 +18,7 @@ from expense_agent.presentation.app import create_app
 from expense_agent.presentation.security import (
     BasicAuthenticator,
     CsrfProtector,
+    PrincipalRole,
     ReviewerCredential,
     hash_password,
 )
@@ -34,6 +35,7 @@ def _credential() -> ReviewerCredential:
         email="reviewer@example.com",
         display_name="Review Manager",
         password_hash=hash_password("secret-pass", iterations=100_000),
+        roles=frozenset({PrincipalRole.ADMIN}),
     )
 
 
