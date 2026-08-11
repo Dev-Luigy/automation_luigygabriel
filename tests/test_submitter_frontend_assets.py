@@ -42,7 +42,10 @@ def test_submitter_portal_has_one_original_and_no_editable_identity() -> None:
     assert 'data-i18n="ocrAssessmentInput"' in html
     assert 'data-i18n="ocrAssessmentHelp"' in html
     assert 'id="tracking-request-id"' in html
-    assert "randomHex(32)" in _asset("submit.js")
+    submit_javascript = _asset("submit.js")
+    assert "randomHex(32)" in submit_javascript
+    assert "crypto.getRandomValues(bytes)" in submit_javascript
+    assert "crypto.randomUUID()" not in submit_javascript
     assert "REQ-20260811-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" in html
     assert 'pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"' in html
 

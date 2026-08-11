@@ -701,9 +701,6 @@ async function loadSession() {
 }
 
 function randomHex(length) {
-  if (typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID().replaceAll("-", "").slice(0, length).toUpperCase();
-  }
   const bytes = new Uint8Array(Math.ceil(length / 2));
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, length).toUpperCase();
