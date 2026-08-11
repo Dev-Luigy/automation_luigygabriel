@@ -1,6 +1,7 @@
 """FastAPI adapter for auditable intake and the same-origin review screen."""
 
 import hashlib
+import hmac
 import re
 import tempfile
 import unicodedata
@@ -44,10 +45,12 @@ from expense_agent.application import (
     RequestResult,
     ReviewCaseDetails,
     ReviewConflictError,
+    ReviewDecisionResult,
     ReviewerIdentity,
     ReviewEventPage,
     ReviewEventQuery,
     ReviewNotFoundError,
+    ReviewPreconditionError,
     ReviewQueueItem,
     ReviewQueuePage,
     ReviewQueueQuery,
@@ -81,6 +84,7 @@ STATIC_DIRECTORY = Path(__file__).with_name("static")
 CORRELATION_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 ATTACHMENT_ID_PATTERN = re.compile(r"^att_[0-9a-f]{32}$")
+REVIEW_ETAG_PATTERN = re.compile(r'^"review-([0-9a-f]{16})-v([1-9][0-9]*)"$')
 MANAGED_ATTACHMENT_PREFIX = "evidence:"
 ALLOWED_ATTACHMENT_MEDIA_TYPES = frozenset(
     {"application/pdf", "image/jpeg", "image/png"}
@@ -571,6 +575,14 @@ def create_app(
             content={"detail": "Review case is no longer pending at that version"},
         )
 
+    @app.exception_handler(ReviewPreconditionError)
+    async def review_precondition_handler(request: Request, _exc: ReviewPreconditionError):
+        _mark_operational_error(request, "stale_precondition")
+        return JSONResponse(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            content={"detail": "The review case version has changed"},
+        )
+
     @app.exception_handler(DomainValidationError)
     async def domain_validation_handler(request: Request, exc: DomainValidationError):
         _mark_operational_error(request, "domain_validation")
@@ -913,12 +925,36 @@ def create_app(
         command: DecisionRequest,
         reviewer: Annotated[ReviewerPrincipal, Depends(require_csrf_and_same_origin)],
         if_match: Annotated[str | None, Header(alias="If-Match")] = None,
+        idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     ) -> JSONResponse:
+        if idempotency_key is None:
+            raise HTTPException(
+                status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                detail="Idempotency-Key is required",
+            )
         if if_match is None:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                 detail="If-Match is required",
             )
+        expected_version = _expected_version_from_etag(request_id, if_match)
+        reviewer_identity = ReviewerIdentity(
+            reviewer_id=reviewer.reviewer_id,
+            email=reviewer.email,
+            display_name=reviewer.display_name,
+        )
+        replay = review_service.find_decision_replay(
+            request_id=request_id,
+            outcome=command.outcome,
+            reason=command.reason,
+            reviewer=reviewer_identity,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+        )
+        if replay is not None:
+            _add_operational_metadata(request, decision_replayed=True)
+            return _decision_response(replay, correlation_id=_correlation_id(request))
+
         details = review_service.get(request_id)
         if details.submission.submitted_by.casefold() == reviewer.email.casefold():
             _mark_operational_error(request, "self_review_denied")
@@ -927,40 +963,18 @@ def create_app(
                 status_code=403,
                 detail="A submitter cannot decide their own reimbursement",
             )
-        if if_match != _etag(details):
-            raise HTTPException(
-                status_code=status.HTTP_412_PRECONDITION_FAILED,
-                detail="The review case version has changed",
-            )
         correlation_id = _correlation_id(request)
         result = review_service.decide(
             request_id=request_id,
             outcome=command.outcome,
             reason=command.reason,
-            reviewer=ReviewerIdentity(
-                reviewer_id=reviewer.reviewer_id,
-                email=reviewer.email,
-                display_name=reviewer.display_name,
-            ),
-            expected_version=details.version,
+            reviewer=reviewer_identity,
+            expected_version=expected_version,
             correlation_id=correlation_id,
+            idempotency_key=idempotency_key,
         )
-        return JSONResponse(
-            status_code=201,
-            content={
-                "decision_id": result.decision.decision_id,
-                "request_id": result.decision.request_id,
-                "outcome": result.decision.outcome.value,
-                "status": result.resulting_status.value,
-                "version": result.version,
-                "audit_event_id": result.audit_event_id,
-                "decided_at": _timestamp(result.decision.decided_at),
-            },
-            headers={
-                "ETag": _etag_for(request_id, result.version),
-                "X-Correlation-ID": correlation_id,
-            },
-        )
+        _add_operational_metadata(request, decision_replayed=result.replayed)
+        return _decision_response(result, correlation_id=correlation_id)
 
     return app
 
@@ -1432,3 +1446,43 @@ def _etag(details: ReviewCaseDetails) -> str:
 def _etag_for(request_id: str, version: int) -> str:
     request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:16]
     return f'"review-{request_hash}-v{version}"'
+
+
+def _expected_version_from_etag(request_id: str, raw_etag: str) -> int:
+    if len(raw_etag) > 128:
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail="The review precondition is invalid",
+        )
+    match = REVIEW_ETAG_PATTERN.fullmatch(raw_etag)
+    expected_request_hash = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:16]
+    if match is None or not hmac.compare_digest(match.group(1), expected_request_hash):
+        raise HTTPException(
+            status_code=status.HTTP_412_PRECONDITION_FAILED,
+            detail="The review precondition is invalid",
+        )
+    return int(match.group(2))
+
+
+def _decision_response(
+    result: ReviewDecisionResult,
+    *,
+    correlation_id: str,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=200 if result.replayed else 201,
+        content={
+            "decision_id": result.decision.decision_id,
+            "request_id": result.decision.request_id,
+            "outcome": result.decision.outcome.value,
+            "status": result.resulting_status.value,
+            "version": result.version,
+            "audit_event_id": result.audit_event_id,
+            "decided_at": _timestamp(result.decision.decided_at),
+            "replayed": result.replayed,
+        },
+        headers={
+            "ETag": _etag_for(result.decision.request_id, result.version),
+            "X-Correlation-ID": correlation_id,
+        },
+    )

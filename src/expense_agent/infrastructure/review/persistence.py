@@ -22,6 +22,7 @@ from expense_agent.application.review import (
     ReviewCaseDetails,
     ReviewCaseStatus,
     ReviewConflictError,
+    ReviewDecisionResult,
     ReviewerIdentity,
     ReviewEventPage,
     ReviewEventQuery,
@@ -235,6 +236,33 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
 BEFORE DELETE ON audit_events
 BEGIN
     SELECT RAISE(ABORT, 'audit_events are append-only');
+END;
+"""
+
+_DECISION_IDEMPOTENCY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS review_decision_idempotency (
+    idempotency_key_hash TEXT PRIMARY KEY CHECK (length(idempotency_key_hash) = 64),
+    command_fingerprint TEXT NOT NULL CHECK (length(command_fingerprint) = 64),
+    request_id TEXT NOT NULL UNIQUE REFERENCES review_cases(request_id),
+    decision_id TEXT NOT NULL UNIQUE REFERENCES human_decisions(decision_id),
+    audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(event_id),
+    resulting_status TEXT NOT NULL CHECK (
+        resulting_status IN ('approved_after_review', 'rejected')
+    ),
+    resulting_version INTEGER NOT NULL CHECK (resulting_version >= 2),
+    created_at TEXT NOT NULL
+);
+
+CREATE TRIGGER IF NOT EXISTS review_decision_idempotency_no_update
+BEFORE UPDATE ON review_decision_idempotency
+BEGIN
+    SELECT RAISE(ABORT, 'review decision idempotency records are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS review_decision_idempotency_no_delete
+BEFORE DELETE ON review_decision_idempotency
+BEGIN
+    SELECT RAISE(ABORT, 'review decision idempotency records are append-only');
 END;
 """
 
@@ -671,6 +699,7 @@ class SqliteReviewRepository:
     def initialize_schema(self) -> None:
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
+            connection.executescript(_DECISION_IDEMPOTENCY_SCHEMA)
             connection.executescript(_OPERATIONAL_AUDIT_SCHEMA)
             self._migrate_minor_unit_columns(connection)
             self._migrate_workflow_columns(connection)
@@ -2357,6 +2386,30 @@ class SqliteReviewRepository:
             raise DomainValidationError(invalid_message) from exc
         return boundary[0], boundary[1]
 
+    def find_human_decision_by_idempotency(
+        self,
+        *,
+        idempotency_key_hash: str,
+        command_fingerprint: str,
+    ) -> ReviewDecisionResult | None:
+        """Resolve the immutable original result without consulting current case state."""
+
+        normalized_key_hash = _require_sha256_hex(
+            idempotency_key_hash,
+            "idempotency_key_hash",
+        )
+        normalized_fingerprint = _require_sha256_hex(
+            command_fingerprint,
+            "command_fingerprint",
+        )
+        with self._connect() as connection:
+            return self._read_idempotent_review_result(
+                connection,
+                idempotency_key_hash=normalized_key_hash,
+                command_fingerprint=normalized_fingerprint,
+                replayed=True,
+            )
+
     def record_human_decision(
         self,
         *,
@@ -2365,7 +2418,9 @@ class SqliteReviewRepository:
         expected_version: int,
         resulting_status: ReimbursementStatus,
         audit_event: AuditEvent,
-    ) -> int:
+        idempotency_key_hash: str,
+        command_fingerprint: str,
+    ) -> ReviewDecisionResult:
         """Commit the decision, state transition, and audit event as one unit."""
 
         self._validate_review_write(
@@ -2375,9 +2430,26 @@ class SqliteReviewRepository:
             resulting_status=resulting_status,
             audit_event=audit_event,
         )
+        normalized_key_hash = _require_sha256_hex(
+            idempotency_key_hash,
+            "idempotency_key_hash",
+        )
+        normalized_fingerprint = _require_sha256_hex(
+            command_fingerprint,
+            "command_fingerprint",
+        )
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            replay = self._read_idempotent_review_result(
+                connection,
+                idempotency_key_hash=normalized_key_hash,
+                command_fingerprint=normalized_fingerprint,
+                replayed=True,
+            )
+            if replay is not None:
+                connection.commit()
+                return replay
             state = connection.execute(
                 """
                 SELECT r.status, r.version, rc.status AS review_status
@@ -2438,8 +2510,33 @@ class SqliteReviewRepository:
 
             self._insert_audit_event(connection, audit_event)
             new_version = expected_version + 1
+            connection.execute(
+                """
+                INSERT INTO review_decision_idempotency (
+                    idempotency_key_hash, command_fingerprint, request_id,
+                    decision_id, audit_event_id, resulting_status,
+                    resulting_version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_key_hash,
+                    normalized_fingerprint,
+                    decision.request_id,
+                    decision.decision_id,
+                    audit_event.event_id,
+                    resulting_status.value,
+                    new_version,
+                    _timestamp_to_db(decision.decided_at),
+                ),
+            )
             connection.commit()
-            return new_version
+            return ReviewDecisionResult(
+                decision=decision,
+                resulting_status=resulting_status,
+                version=new_version,
+                audit_event_id=audit_event.event_id,
+                replayed=False,
+            )
         except (ReviewConflictError, ReviewNotFoundError):
             connection.rollback()
             raise
@@ -2493,6 +2590,55 @@ class SqliteReviewRepository:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _read_idempotent_review_result(
+        connection: sqlite3.Connection,
+        *,
+        idempotency_key_hash: str,
+        command_fingerprint: str,
+        replayed: bool,
+    ) -> ReviewDecisionResult | None:
+        row = connection.execute(
+            """
+            SELECT
+                command.command_fingerprint,
+                command.resulting_status,
+                command.resulting_version,
+                command.audit_event_id,
+                decision.decision_id,
+                decision.request_id,
+                decision.outcome,
+                decision.reviewer_id,
+                decision.reason,
+                decision.decided_at
+            FROM review_decision_idempotency AS command
+            JOIN human_decisions AS decision
+                ON decision.decision_id = command.decision_id
+            WHERE command.idempotency_key_hash = ?
+            """,
+            (idempotency_key_hash,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not hmac.compare_digest(row["command_fingerprint"], command_fingerprint):
+            raise ReviewConflictError(
+                "the idempotency key is already bound to a different review command"
+            )
+        return ReviewDecisionResult(
+            decision=HumanDecision(
+                decision_id=row["decision_id"],
+                request_id=row["request_id"],
+                outcome=ReviewOutcome(row["outcome"]),
+                reviewer=row["reviewer_id"],
+                reason=row["reason"],
+                decided_at=_timestamp_from_db(row["decided_at"]),
+            ),
+            resulting_status=ReimbursementStatus(row["resulting_status"]),
+            version=row["resulting_version"],
+            audit_event_id=row["audit_event_id"],
+            replayed=replayed,
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
@@ -3223,6 +3369,15 @@ class SqliteReviewRepository:
             raise DomainValidationError("audit actor does not match authenticated identity")
         if audit_event.occurred_at != decision.decided_at:
             raise DomainValidationError("audit and decision timestamps must match")
+
+
+def _require_sha256_hex(value: str, field_name: str) -> str:
+    normalized = require_non_blank(value, field_name)
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise DomainValidationError(f"{field_name} must be a lowercase SHA-256 hex digest")
+    return normalized
 
 
 def _business_event_from_row(row: sqlite3.Row) -> ReviewBusinessEvent:

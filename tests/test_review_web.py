@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -107,7 +109,12 @@ def test_decision_rejects_missing_csrf_cross_origin_and_stale_version(tmp_path) 
 
     no_csrf = client.post(
         "/api/reviews/REQ-WEB-1/decisions",
-        headers={**headers, "Origin": "https://testserver", "If-Match": etag},
+        headers={
+            **headers,
+            "Origin": "https://testserver",
+            "If-Match": etag,
+            "Idempotency-Key": "decision-key-no-csrf",
+        },
         json=body,
     )
     cross_origin = client.post(
@@ -117,6 +124,7 @@ def test_decision_rejects_missing_csrf_cross_origin_and_stale_version(tmp_path) 
             "Origin": "https://attacker.example",
             "X-CSRF-Token": token,
             "If-Match": etag,
+            "Idempotency-Key": "decision-key-cross-origin",
         },
         json=body,
     )
@@ -127,6 +135,7 @@ def test_decision_rejects_missing_csrf_cross_origin_and_stale_version(tmp_path) 
             "Origin": "https://testserver",
             "X-CSRF-Token": token,
             "If-Match": '"stale"',
+            "Idempotency-Key": "decision-key-stale-etag",
         },
         json=body,
     )
@@ -146,6 +155,7 @@ def test_decision_identity_is_server_derived_and_writes_one_atomic_audit(tmp_pat
         "X-CSRF-Token": token,
         "If-Match": etag,
         "X-Correlation-ID": "web-test-42",
+        "Idempotency-Key": "decision-key-web-record",
     }
 
     forged = client.post(
@@ -162,11 +172,34 @@ def test_decision_identity_is_server_derived_and_writes_one_atomic_audit(tmp_pat
         headers=write_headers,
         json={"outcome": "approved", "reason": "  Evidence verified against receipt.  "},
     )
+    replayed = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers=write_headers,
+        json={"outcome": "approved", "reason": "Evidence verified against receipt."},
+    )
+    conflicting_reuse = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers=write_headers,
+        json={"outcome": "approved", "reason": "A different command binding."},
+    )
+    stale_new_command = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers={**write_headers, "Idempotency-Key": "decision-key-new-after-final"},
+        json={"outcome": "approved", "reason": "Evidence verified against receipt."},
+    )
 
     assert forged.status_code == 422
     assert recorded.status_code == 201
+    assert recorded.json()["replayed"] is False
     assert recorded.json()["status"] == "approved_after_review"
     assert recorded.headers["x-correlation-id"] == "web-test-42"
+    assert replayed.status_code == 200
+    assert replayed.json()["replayed"] is True
+    assert replayed.json()["decision_id"] == recorded.json()["decision_id"]
+    assert replayed.json()["audit_event_id"] == recorded.json()["audit_event_id"]
+    assert replayed.json()["version"] == recorded.json()["version"]
+    assert conflicting_reuse.status_code == 409
+    assert stale_new_command.status_code == 412
     assert client.get("/api/reviews", headers=headers).json()["items"] == []
 
     timeline = client.get("/api/reviews/REQ-WEB-1/events", headers=headers)
@@ -197,18 +230,41 @@ def test_decision_identity_is_server_derived_and_writes_one_atomic_audit(tmp_pat
     assert reimbursement == ("approved_after_review", 2)
 
 
-def test_missing_if_match_and_non_json_body_are_rejected(tmp_path) -> None:
-    client, _database_path = _web_client(tmp_path)
+def test_missing_or_malformed_command_preconditions_fail_without_mutation(tmp_path) -> None:
+    client, database_path = _web_client(tmp_path)
     headers, token = _session(client)
+    etag = client.get("/api/reviews/REQ-WEB-1", headers=headers).headers["etag"]
     base = {
         **headers,
         "Origin": "https://testserver",
         "X-CSRF-Token": token,
+        "Idempotency-Key": "decision-key-precondition",
     }
 
     missing_precondition = client.post(
         "/api/reviews/REQ-WEB-1/decisions",
         headers=base,
+        json={"outcome": "rejected", "reason": "Invalid receipt."},
+    )
+    missing_idempotency = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers={
+            **headers,
+            "Origin": "https://testserver",
+            "X-CSRF-Token": token,
+            "If-Match": etag,
+        },
+        json={"outcome": "rejected", "reason": "Invalid receipt."},
+    )
+    malformed_idempotency = client.post(
+        "/api/reviews/REQ-WEB-1/decisions",
+        headers={
+            **headers,
+            "Origin": "https://testserver",
+            "X-CSRF-Token": token,
+            "If-Match": etag,
+            "Idempotency-Key": "bad key",
+        },
         json={"outcome": "rejected", "reason": "Invalid receipt."},
     )
     non_json = client.post(
@@ -218,7 +274,64 @@ def test_missing_if_match_and_non_json_body_are_rejected(tmp_path) -> None:
     )
 
     assert missing_precondition.status_code == 428
+    assert missing_idempotency.status_code == 428
+    assert malformed_idempotency.status_code == 422
     assert non_json.status_code == 415
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM review_decision_idempotency"
+        ).fetchone()[0] == 0
+
+
+def test_concurrent_identical_http_decisions_return_one_create_and_one_replay(
+    tmp_path,
+) -> None:
+    first_client, database_path = _web_client(tmp_path)
+    second_client = TestClient(first_client.app, base_url="https://testserver")
+    headers, token = _session(first_client)
+    etag = first_client.get(
+        "/api/reviews/REQ-WEB-1",
+        headers=headers,
+    ).headers["etag"]
+    barrier = threading.Barrier(2)
+
+    def decide(client_and_correlation):
+        client, correlation_id = client_and_correlation
+        barrier.wait(timeout=5)
+        return client.post(
+            "/api/reviews/REQ-WEB-1/decisions",
+            headers={
+                **headers,
+                "Origin": "https://testserver",
+                "X-CSRF-Token": token,
+                "If-Match": etag,
+                "Idempotency-Key": "decision-key-http-concurrent",
+                "X-Correlation-ID": correlation_id,
+            },
+            json={"outcome": "rejected", "reason": "Evidence is inconsistent."},
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = tuple(
+            executor.map(
+                decide,
+                (
+                    (first_client, "corr-http-one"),
+                    (second_client, "corr-http-two"),
+                ),
+            )
+        )
+
+    assert sorted(response.status_code for response in responses) == [200, 201]
+    assert sorted(response.json()["replayed"] for response in responses) == [False, True]
+    assert len({response.json()["decision_id"] for response in responses}) == 1
+    assert len({response.json()["audit_event_id"] for response in responses}) == 1
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type = 'human_review_decided'"
+        ).fetchone()[0] == 1
 
 
 def test_http_is_blocked_when_https_is_required(tmp_path) -> None:

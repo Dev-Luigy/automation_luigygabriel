@@ -113,6 +113,26 @@ def test_review_console_blocks_approval_when_a_mandatory_rejection_rule_applies(
     assert 'busy || hasMandatoryRejection()' in javascript
 
 
+def test_review_console_hides_decision_controls_by_role_and_retries_one_command_key() -> None:
+    javascript = _asset("reviews.js")
+
+    assert 'state.roles.includes("reviewer") || state.roles.includes("admin")' in javascript
+    assert "const showDecisionControls = isPending && canRecordDecision();" in javascript
+    assert 'elements["decision-panel"].hidden = !showDecisionControls;' in javascript
+    assert "decisionNav.hidden = !showDecisionControls;" in javascript
+    assert "|| !canRecordDecision()" in javascript
+
+    submit_code = javascript[
+        javascript.index("async function submitDecision") : javascript.index(
+            "function rerenderForLanguage"
+        )
+    ]
+    assert submit_code.count("crypto.randomUUID()") == 1
+    assert '"Idempotency-Key": decisionCommand.idempotencyKey' in submit_code
+    assert '"If-Match": decisionCommand.etag' in submit_code
+    assert submit_code.count("await sendDecision()") == 2
+
+
 def test_review_console_has_no_dead_product_navigation_and_one_queue_table() -> None:
     html = _asset("reviews.html")
 

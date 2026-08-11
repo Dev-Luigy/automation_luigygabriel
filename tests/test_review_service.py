@@ -7,11 +7,14 @@ from expense_agent.application.review import (
     ReviewCaseDetails,
     ReviewCaseStatus,
     ReviewConflictError,
+    ReviewDecisionResult,
     ReviewerIdentity,
     ReviewNotFoundError,
     ReviewProblem,
     ReviewQueueItem,
     ReviewService,
+    decision_idempotency_key_hash,
+    review_decision_command_fingerprint,
 )
 from expense_agent.domain import (
     AttachmentReference,
@@ -91,9 +94,18 @@ class FakeReviewRepository:
             return self.details
         return None
 
+    def find_human_decision_by_idempotency(self, **_query):
+        return None
+
     def record_human_decision(self, **write):
         self.write = write
-        return write["expected_version"] + 1
+        return ReviewDecisionResult(
+            decision=write["decision"],
+            resulting_status=write["resulting_status"],
+            version=write["expected_version"] + 1,
+            audit_event_id=write["audit_event"].event_id,
+            replayed=False,
+        )
 
 
 def test_service_uses_canonical_reviewer_and_aggregate_transition() -> None:
@@ -117,6 +129,7 @@ def test_service_uses_canonical_reviewer_and_aggregate_transition() -> None:
         reviewer=reviewer,
         expected_version=1,
         correlation_id="corr-1001",
+        idempotency_key="decision-key-1001",
     )
 
     assert result.resulting_status is ReimbursementStatus.APPROVED_AFTER_REVIEW
@@ -156,6 +169,7 @@ def test_service_rejects_missing_or_stale_cases() -> None:
             reviewer=ReviewerIdentity("user-1", "reviewer@company.com", "Reviewer"),
             expected_version=1,
             correlation_id="corr-stale",
+            idempotency_key="decision-key-stale",
         )
 
 
@@ -171,6 +185,7 @@ def test_service_requires_a_reason_and_typed_authenticated_identity() -> None:
             reviewer=reviewer,
             expected_version=1,
             correlation_id="corr-1",
+            idempotency_key="decision-key-reason",
         )
 
     with pytest.raises(DomainValidationError, match="ReviewerIdentity"):
@@ -181,6 +196,7 @@ def test_service_requires_a_reason_and_typed_authenticated_identity() -> None:
             reviewer="forged-user",  # type: ignore[arg-type]
             expected_version=1,
             correlation_id="corr-2",
+            idempotency_key="decision-key-identity",
         )
 
 
@@ -227,4 +243,47 @@ def test_service_does_not_allow_human_approval_to_override_mandatory_rejection()
             reviewer=reviewer,
             expected_version=details.version,
             correlation_id="corr-mandatory-reject",
+            idempotency_key="decision-key-mandatory",
         )
+
+
+@pytest.mark.parametrize(
+    "raw_key",
+    (
+        "short",
+        "contains space",
+        "contains\tcontrol",
+        "não-ascii-key",
+        "x" * 129,
+    ),
+)
+def test_decision_idempotency_key_is_bounded_visible_ascii(raw_key: str) -> None:
+    with pytest.raises(DomainValidationError, match="idempotency key"):
+        decision_idempotency_key_hash(raw_key)
+
+    assert len(decision_idempotency_key_hash("12345678")) == 64
+    assert len(decision_idempotency_key_hash("x" * 128)) == 64
+
+
+def test_command_fingerprint_uses_normalized_reason_and_binds_expected_version() -> None:
+    common = {
+        "request_id": "REQ-1001",
+        "outcome": ReviewOutcome.REJECTED,
+        "reviewer_id": "reviewer-1",
+    }
+    normalized = review_decision_command_fingerprint(
+        **common,
+        reason="Evidence mismatch.",
+        expected_version=3,
+    )
+
+    assert normalized == review_decision_command_fingerprint(
+        **common,
+        reason="  Evidence mismatch.  ",
+        expected_version=3,
+    )
+    assert normalized != review_decision_command_fingerprint(
+        **common,
+        reason="Evidence mismatch.",
+        expected_version=4,
+    )

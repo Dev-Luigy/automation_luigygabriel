@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,6 +33,10 @@ class ReviewNotFoundError(LookupError):
 
 class ReviewConflictError(RuntimeError):
     """Raised when a stale, repeated, or competing review cannot be committed."""
+
+
+class ReviewPreconditionError(ReviewConflictError):
+    """Raised when a review command is based on a stale case representation."""
 
 
 class ReviewCaseStatus(str, Enum):
@@ -390,6 +396,64 @@ class ReviewDecisionResult:
     resulting_status: ReimbursementStatus
     version: int
     audit_event_id: str
+    replayed: bool = False
+
+
+def decision_idempotency_key_hash(raw_key: str) -> str:
+    """Validate a transport-safe command key and return its irreversible digest."""
+
+    if not isinstance(raw_key, str):
+        raise DomainValidationError("idempotency key must be a string")
+    if not 8 <= len(raw_key) <= 128:
+        raise DomainValidationError(
+            "idempotency key must contain between 8 and 128 ASCII characters"
+        )
+    try:
+        encoded = raw_key.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise DomainValidationError("idempotency key must contain only ASCII characters") from exc
+    if any(byte < 0x21 or byte > 0x7E for byte in encoded):
+        raise DomainValidationError(
+            "idempotency key must contain only visible ASCII characters without spaces"
+        )
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def review_decision_command_fingerprint(
+    *,
+    request_id: str,
+    outcome: ReviewOutcome,
+    reason: str,
+    reviewer_id: str,
+    expected_version: int,
+) -> str:
+    """Bind an idempotency key to the complete normalized financial command."""
+
+    normalized_request_id = require_non_blank(request_id, "request_id")
+    normalized_reason = require_non_blank(reason, "reason")
+    normalized_reviewer_id = require_non_blank(reviewer_id, "reviewer_id")
+    if not isinstance(outcome, ReviewOutcome):
+        raise DomainValidationError("outcome must be a ReviewOutcome")
+    if (
+        not isinstance(expected_version, int)
+        or isinstance(expected_version, bool)
+        or expected_version < 1
+    ):
+        raise DomainValidationError("expected_version must be a positive integer")
+    canonical = json.dumps(
+        {
+            "expected_version": expected_version,
+            "outcome": outcome.value,
+            "reason": normalized_reason,
+            "request_id": normalized_request_id,
+            "reviewer_id": normalized_reviewer_id,
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 class ReviewRepository(Protocol):
@@ -412,6 +476,13 @@ class ReviewRepository(Protocol):
         query: ReviewEventQuery,
     ) -> ReviewEventPage | None: ...
 
+    def find_human_decision_by_idempotency(
+        self,
+        *,
+        idempotency_key_hash: str,
+        command_fingerprint: str,
+    ) -> ReviewDecisionResult | None: ...
+
     def record_human_decision(
         self,
         *,
@@ -420,7 +491,9 @@ class ReviewRepository(Protocol):
         expected_version: int,
         resulting_status: ReimbursementStatus,
         audit_event: AuditEvent,
-    ) -> int: ...
+        idempotency_key_hash: str,
+        command_fingerprint: str,
+    ) -> ReviewDecisionResult: ...
 
 
 class ReviewService:
@@ -492,6 +565,7 @@ class ReviewService:
         reviewer: ReviewerIdentity,
         expected_version: int,
         correlation_id: str,
+        idempotency_key: str,
     ) -> ReviewDecisionResult:
         """Apply domain rules, then atomically commit the decision and audit fact."""
 
@@ -507,8 +581,24 @@ class ReviewService:
             or expected_version < 1
         ):
             raise DomainValidationError("expected_version must be a positive integer")
-        if isinstance(reason, str) and len(reason) > 2_000:
+        normalized_reason = require_non_blank(reason, "reason")
+        if len(normalized_reason) > 2_000:
             raise DomainValidationError("reason must contain at most 2000 characters")
+
+        key_hash = decision_idempotency_key_hash(idempotency_key)
+        command_fingerprint = review_decision_command_fingerprint(
+            request_id=normalized_request_id,
+            outcome=outcome,
+            reason=normalized_reason,
+            reviewer_id=reviewer.reviewer_id,
+            expected_version=expected_version,
+        )
+        replay = self._repository.find_human_decision_by_idempotency(
+            idempotency_key_hash=key_hash,
+            command_fingerprint=command_fingerprint,
+        )
+        if replay is not None:
+            return replay
 
         details = self.get(normalized_request_id)
         if (
@@ -516,7 +606,18 @@ class ReviewService:
             or details.review_status is not ReviewCaseStatus.PENDING
             or details.version != expected_version
         ):
-            raise ReviewConflictError("review case is no longer pending at the expected version")
+            # A competing identical command may have committed between the
+            # initial key lookup and this state read. Re-check the durable
+            # command ledger before treating the original ETag as stale.
+            replay = self._repository.find_human_decision_by_idempotency(
+                idempotency_key_hash=key_hash,
+                command_fingerprint=command_fingerprint,
+            )
+            if replay is not None:
+                return replay
+            raise ReviewPreconditionError(
+                "review case is no longer pending at the expected version"
+            )
 
         decided_at = self._clock()
         decision = HumanDecision(
@@ -524,7 +625,7 @@ class ReviewService:
             request_id=normalized_request_id,
             outcome=outcome,
             reviewer=reviewer.reviewer_id,
-            reason=reason,
+            reason=normalized_reason,
             decided_at=decided_at,
         )
 
@@ -554,18 +655,41 @@ class ReviewService:
                 "to_status": case.status.value,
             },
         )
-        version = self._repository.record_human_decision(
+        return self._repository.record_human_decision(
             decision=decision,
             reviewer=reviewer,
             expected_version=expected_version,
             resulting_status=case.status,
             audit_event=audit_event,
+            idempotency_key_hash=key_hash,
+            command_fingerprint=command_fingerprint,
         )
-        return ReviewDecisionResult(
-            decision=decision,
-            resulting_status=case.status,
-            version=version,
-            audit_event_id=audit_event.event_id,
+
+    def find_decision_replay(
+        self,
+        *,
+        request_id: str,
+        outcome: ReviewOutcome,
+        reason: str,
+        reviewer: ReviewerIdentity,
+        expected_version: int,
+        idempotency_key: str,
+    ) -> ReviewDecisionResult | None:
+        """Return an original command result before evaluating current case state."""
+
+        if not isinstance(reviewer, ReviewerIdentity):
+            raise DomainValidationError("reviewer must come from a ReviewerIdentity")
+        key_hash = decision_idempotency_key_hash(idempotency_key)
+        fingerprint = review_decision_command_fingerprint(
+            request_id=request_id,
+            outcome=outcome,
+            reason=reason,
+            reviewer_id=reviewer.reviewer_id,
+            expected_version=expected_version,
+        )
+        return self._repository.find_human_decision_by_idempotency(
+            idempotency_key_hash=key_hash,
+            command_fingerprint=fingerprint,
         )
 
 
@@ -579,6 +703,7 @@ __all__ = [
     "ReviewEventPage",
     "ReviewEventQuery",
     "ReviewNotFoundError",
+    "ReviewPreconditionError",
     "ReviewProblem",
     "ReviewQueueItem",
     "ReviewQueuePage",
@@ -588,4 +713,6 @@ __all__ = [
     "ReviewRepository",
     "ReviewService",
     "ReviewerIdentity",
+    "decision_idempotency_key_hash",
+    "review_decision_command_fingerprint",
 ]

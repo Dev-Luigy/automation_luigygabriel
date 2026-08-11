@@ -359,6 +359,7 @@ def test_real_pipeline_pending_v3_remains_compatible_with_human_decision_v4(tmp_
         reviewer=reviewer,
         expected_version=3,
         correlation_id="corr-human",
+        idempotency_key="decision-key-pipeline-review",
     )
 
     assert reviewed.version == 4

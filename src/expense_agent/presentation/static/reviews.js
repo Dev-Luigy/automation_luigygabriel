@@ -857,6 +857,7 @@ const state = {
   language: detectLanguage(),
   csrfToken: null,
   reviewerName: null,
+  roles: [],
   filters: {
     search: "",
     category: "",
@@ -1066,8 +1067,16 @@ function localizedApiError(error, context) {
 async function loadSession() {
   const { body } = await api("/api/session");
   state.csrfToken = body?.csrf_token ?? null;
-  state.reviewerName = body?.reviewer?.display_name ?? t("notAvailable");
+  const principal = body?.principal ?? body?.reviewer ?? {};
+  state.reviewerName = principal.display_name ?? t("notAvailable");
+  state.roles = Array.isArray(principal.roles)
+    ? principal.roles.filter((role) => typeof role === "string")
+    : [];
   elements["reviewer-name"].textContent = state.reviewerName;
+}
+
+function canRecordDecision() {
+  return state.roles.includes("reviewer") || state.roles.includes("admin");
 }
 
 function setQueueState(mode, errorMessage = null) {
@@ -1902,11 +1911,12 @@ function renderCase(caseData, { preserveReason = false } = {}) {
   updateReasonCounter();
   const isPending = caseData.status === "pending_review";
   const approvalBlocked = isPending && hasMandatoryRejection(caseData);
-  elements["decision-panel"].hidden = !isPending;
+  const showDecisionControls = isPending && canRecordDecision();
+  elements["decision-panel"].hidden = !showDecisionControls;
   elements["mandatory-rejection-notice"].hidden = !approvalBlocked;
   elements["approve-button"].disabled = approvalBlocked;
   const decisionNav = document.querySelector('.detail-nav a[href="#decision-panel"]');
-  if (decisionNav) decisionNav.hidden = !isPending;
+  if (decisionNav) decisionNav.hidden = !showDecisionControls;
   setDetailState("content");
 }
 
@@ -1945,6 +1955,7 @@ function renderConfirmation(outcome) {
 }
 
 function requestDecision(outcome) {
+  if (!canRecordDecision()) return;
   if (outcome === "approved" && hasMandatoryRejection()) return;
   const reason = elements["decision-reason"].value.trim();
   if (!reason) {
@@ -1967,22 +1978,45 @@ function setDecisionBusy(busy) {
 }
 
 async function submitDecision() {
-  if (state.deciding || !state.pendingOutcome || !state.selectedRequestId) return;
+  if (
+    state.deciding
+    || !state.pendingOutcome
+    || !state.selectedRequestId
+    || !canRecordDecision()
+  ) return;
   const requestId = state.selectedRequestId;
-  setDecisionBusy(true);
-  try {
-    const { body } = await api(`/api/reviews/${encodeURIComponent(requestId)}/decisions`, {
+  const decisionCommand = {
+    etag: state.selectedEtag,
+    idempotencyKey: crypto.randomUUID(),
+    outcome: state.pendingOutcome,
+    reason: elements["decision-reason"].value.trim(),
+  };
+  const sendDecision = () => api(
+    `/api/reviews/${encodeURIComponent(requestId)}/decisions`,
+    {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "If-Match": state.selectedEtag,
+        "Idempotency-Key": decisionCommand.idempotencyKey,
+        "If-Match": decisionCommand.etag,
         "X-CSRF-Token": state.csrfToken,
       },
       body: JSON.stringify({
-        outcome: state.pendingOutcome,
-        reason: elements["decision-reason"].value.trim(),
+        outcome: decisionCommand.outcome,
+        reason: decisionCommand.reason,
       }),
-    });
+    },
+  );
+  setDecisionBusy(true);
+  try {
+    let response;
+    try {
+      response = await sendDecision();
+    } catch (error) {
+      if (error.status && error.status < 500) throw error;
+      response = await sendDecision();
+    }
+    const { body } = response;
     if (elements["confirm-dialog"].open) elements["confirm-dialog"].close();
     showToast(t("decisionRecorded", { eventId: body?.audit_event_id ?? "—" }));
     await Promise.all([

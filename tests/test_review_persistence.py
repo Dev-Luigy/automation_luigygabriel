@@ -199,6 +199,7 @@ def test_decision_status_and_audit_commit_atomically(tmp_path) -> None:
         reviewer=_reviewer(),
         expected_version=1,
         correlation_id="corr-2001",
+        idempotency_key="decision-key-2001",
     )
 
     assert result.version == 2
@@ -224,6 +225,13 @@ def test_decision_status_and_audit_commit_atomically(tmp_path) -> None:
             WHERE request_id = 'REQ-2001' AND event_type = 'human_review_decided'
             """
         ).fetchone()
+        command_row = connection.execute(
+            """
+            SELECT idempotency_key_hash, command_fingerprint, decision_id,
+                   audit_event_id, resulting_version
+            FROM review_decision_idempotency
+            """
+        ).fetchone()
     assert decision_row == (
         "employee-directory:42",
         "manager@company.com",
@@ -240,9 +248,16 @@ def test_decision_status_and_audit_commit_atomically(tmp_path) -> None:
         separators=(",", ":"),
         sort_keys=True,
     )
+    assert command_row is not None
+    assert len(command_row[0]) == 64
+    assert len(command_row[1]) == 64
+    assert "decision-key-2001" not in tuple(command_row)
+    assert command_row[2:] == ("HUMAN-2001", "AUDIT-2001", 2)
 
 
-def test_repeated_decision_is_a_conflict_and_does_not_duplicate_records(tmp_path) -> None:
+def test_repeated_identical_decision_replays_original_without_duplicate_records(
+    tmp_path,
+) -> None:
     database_path = tmp_path / "review.db"
     repository = SqliteReviewRepository(database_path)
     _seed(repository)
@@ -254,11 +269,16 @@ def test_repeated_decision_is_a_conflict_and_does_not_duplicate_records(tmp_path
         "reviewer": _reviewer(),
         "expected_version": 1,
         "correlation_id": "corr-1",
+        "idempotency_key": "decision-key-repeat",
     }
-    service.decide(**arguments)
+    first = service.decide(**arguments)
+    replay = service.decide(**arguments)
 
-    with pytest.raises(ReviewConflictError):
-        service.decide(**arguments)
+    assert first.replayed is False
+    assert replay.replayed is True
+    assert replay.decision == first.decision
+    assert replay.audit_event_id == first.audit_event_id
+    assert replay.version == first.version
 
     with sqlite3.connect(database_path) as connection:
         human_count = connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0]
@@ -282,6 +302,9 @@ def test_two_concurrent_reviewers_produce_exactly_one_terminal_decision(tmp_path
             barrier.wait(timeout=5)
             return details
 
+        def find_human_decision_by_idempotency(self, **query):
+            return repository.find_human_decision_by_idempotency(**query)
+
         def record_human_decision(self, **write):
             return repository.record_human_decision(**write)
 
@@ -299,6 +322,7 @@ def test_two_concurrent_reviewers_produce_exactly_one_terminal_decision(tmp_path
                 reviewer=_reviewer(),
                 expected_version=1,
                 correlation_id=f"corr-{suffix}",
+                idempotency_key=f"decision-key-{suffix}",
             )
         except ReviewConflictError:
             return "conflict"
@@ -324,6 +348,87 @@ def test_two_concurrent_reviewers_produce_exactly_one_terminal_decision(tmp_path
     assert status_and_version[0] in {"approved_after_review", "rejected"}
 
 
+def test_two_concurrent_identical_commands_commit_once_and_replay_once(tmp_path) -> None:
+    database_path = tmp_path / "review-idempotent-concurrency.db"
+    repository = SqliteReviewRepository(database_path)
+    _seed(repository)
+    barrier = threading.Barrier(2)
+
+    def decide(suffix: str):
+        service = _service(
+            repository,
+            decision_id=f"HUMAN-{suffix}",
+            event_id=f"AUDIT-{suffix}",
+        )
+        barrier.wait(timeout=5)
+        return service.decide(
+            request_id="REQ-2001",
+            outcome=ReviewOutcome.REJECTED,
+            reason="The receipt total is inconsistent.",
+            reviewer=_reviewer(),
+            expected_version=1,
+            correlation_id=f"corr-{suffix}",
+            idempotency_key="decision-key-concurrent-same",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(decide, ("one", "two")))
+
+    assert sorted(result.replayed for result in results) == [False, True]
+    assert len({result.decision.decision_id for result in results}) == 1
+    assert len({result.audit_event_id for result in results}) == 1
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type = 'human_review_decided'"
+        ).fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM review_decision_idempotency"
+        ).fetchone()[0] == 1
+
+
+def test_idempotency_key_cannot_be_rebound_to_any_command_field(tmp_path) -> None:
+    repository = SqliteReviewRepository(tmp_path / "review-key-binding.db")
+    _seed(repository)
+    service = _service(repository, decision_id="HUMAN-bound", event_id="AUDIT-bound")
+    base = {
+        "request_id": "REQ-2001",
+        "outcome": ReviewOutcome.REJECTED,
+        "reason": "The receipt total is inconsistent.",
+        "reviewer": _reviewer(),
+        "expected_version": 1,
+        "correlation_id": "corr-bound",
+        "idempotency_key": "decision-key-bound",
+    }
+    service.decide(**base)
+
+    changes = (
+        {"request_id": "REQ-other"},
+        {"outcome": ReviewOutcome.APPROVED},
+        {"reason": "Different normalized reason."},
+        {
+            "reviewer": ReviewerIdentity(
+                "employee-directory:99",
+                "other-manager@company.com",
+                "Other Review Manager",
+            )
+        },
+        {"expected_version": 2},
+    )
+    for change in changes:
+        with pytest.raises(ReviewConflictError, match="idempotency key"):
+            service.decide(**(base | change))
+
+    details = repository.get("REQ-2001")
+    assert details is not None
+    assert details.version == 2
+    with sqlite3.connect(repository.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM human_decisions").fetchone()[0] == 1
+        assert connection.execute(
+            "SELECT COUNT(*) FROM audit_events WHERE event_type = 'human_review_decided'"
+        ).fetchone()[0] == 1
+
+
 def test_late_audit_failure_rolls_back_decision_and_status(tmp_path) -> None:
     database_path = tmp_path / "review.db"
     repository = SqliteReviewRepository(database_path)
@@ -338,6 +443,7 @@ def test_late_audit_failure_rolls_back_decision_and_status(tmp_path) -> None:
         reviewer=_reviewer(),
         expected_version=1,
         correlation_id="corr-first",
+        idempotency_key="decision-key-first",
     )
 
     with pytest.raises(ReviewConflictError, match="immutable record"):
@@ -348,6 +454,7 @@ def test_late_audit_failure_rolls_back_decision_and_status(tmp_path) -> None:
             reviewer=_reviewer(),
             expected_version=1,
             correlation_id="corr-second",
+            idempotency_key="decision-key-second",
         )
 
     second_details = repository.get("REQ-second")
@@ -369,6 +476,7 @@ def test_human_decisions_and_audit_events_are_database_immutable(tmp_path) -> No
         reviewer=_reviewer(),
         expected_version=1,
         correlation_id="corr-1",
+        idempotency_key="decision-key-immutable",
     )
 
     statements = (
@@ -376,6 +484,8 @@ def test_human_decisions_and_audit_events_are_database_immutable(tmp_path) -> No
         "DELETE FROM human_decisions WHERE decision_id = 'HUMAN-1'",
         "UPDATE audit_events SET actor_id = 'changed' WHERE event_id = 'AUDIT-1'",
         "DELETE FROM audit_events WHERE event_id = 'AUDIT-1'",
+        "UPDATE review_decision_idempotency SET created_at = created_at",
+        "DELETE FROM review_decision_idempotency",
     )
     for statement in statements:
         with (

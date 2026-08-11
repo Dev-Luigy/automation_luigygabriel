@@ -178,7 +178,11 @@ def test_decisions_require_reviewer_role_and_block_self_review(tmp_path: Path) -
     decision = {"outcome": "approved", "reason": "Evidence was checked."}
     self_review = client.post(
         "/api/reviews/REQ-CHARLIE-1/decisions",
-        headers={**charlie_write, "If-Match": details.headers["etag"]},
+        headers={
+            **charlie_write,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-charlie-self",
+        },
         json=decision,
     )
     assert self_review.status_code == 403
@@ -186,7 +190,11 @@ def test_decisions_require_reviewer_role_and_block_self_review(tmp_path: Path) -
     auditor_write = _write_headers(client, "auditor")
     auditor_decision = client.post(
         "/api/reviews/REQ-CHARLIE-1/decisions",
-        headers={**auditor_write, "If-Match": details.headers["etag"]},
+        headers={
+            **auditor_write,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-auditor",
+        },
         json=decision,
     )
     assert auditor_decision.status_code == 403
@@ -194,7 +202,11 @@ def test_decisions_require_reviewer_role_and_block_self_review(tmp_path: Path) -
     reviewer_write = _write_headers(client, "reviewer")
     reviewed = client.post(
         "/api/reviews/REQ-CHARLIE-1/decisions",
-        headers={**reviewer_write, "If-Match": details.headers["etag"]},
+        headers={
+            **reviewer_write,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-reviewer",
+        },
         json=decision,
     )
     assert reviewed.status_code == 201
@@ -221,7 +233,11 @@ def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path)
     details = client.get("/api/reviews/REQ-ADMIN-OWN", headers=_headers("admin"))
     denied = client.post(
         "/api/reviews/REQ-ADMIN-OWN/decisions",
-        headers={**admin_write, "If-Match": details.headers["etag"]},
+        headers={
+            **admin_write,
+            "If-Match": details.headers["etag"],
+            "Idempotency-Key": "decision-key-admin-self",
+        },
         json={"outcome": "rejected", "reason": "Self-review must remain blocked."},
     )
     assert denied.status_code == 403
