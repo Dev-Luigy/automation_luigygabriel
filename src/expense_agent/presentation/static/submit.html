@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#102a43">
+    <meta name="referrer" content="no-referrer">
+    <title>Expense Agent · Submit reimbursement</title>
+    <link rel="stylesheet" href="/assets/submit.css">
+    <script type="module" src="/assets/submit.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#submission-form" data-i18n="skipToForm">Skip to reimbursement form</a>
+
+    <header class="topbar">
+      <div class="brand" aria-label="Expense Agent">
+        <span class="brand-mark" aria-hidden="true">EA</span>
+        <span class="brand-copy">
+          <strong>Expense Agent</strong>
+          <small data-i18n="brandSubtitle">Reimbursement portal</small>
+        </span>
+      </div>
+
+      <div class="workspace-pill" aria-label="Current workspace" data-i18n-aria-label="workspaceLabel">
+        <span class="workspace-dot" aria-hidden="true"></span>
+        <span data-i18n="newRequestNav">New request</span>
+      </div>
+
+      <div class="topbar-actions">
+        <label class="language-control" for="language-select">
+          <span data-i18n="language">Language</span>
+          <select id="language-select" aria-label="Language" data-i18n-aria-label="language">
+            <option value="pt-BR">Português</option>
+            <option value="en">English</option>
+            <option value="es">Español</option>
+          </select>
+        </label>
+
+        <div class="identity" aria-label="Authenticated account" data-i18n-aria-label="authenticatedAccount">
+          <span class="identity-avatar" id="identity-avatar" aria-hidden="true">--</span>
+          <span class="identity-copy">
+            <small data-i18n="signedInAs">Signed in as</small>
+            <strong id="identity-name" data-i18n="loadingIdentity">Loading identity…</strong>
+            <span id="identity-roles" class="role-list" aria-label="Account roles" data-i18n-aria-label="accountRoles"></span>
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div class="hero-copy">
+          <p class="eyebrow" data-i18n="heroEyebrow">Protected financial workflow</p>
+          <h1 id="page-title" data-i18n="pageTitle">Submit a reimbursement with confidence.</h1>
+          <p data-i18n="pageDescription">Attach the original receipt, record the claim, and keep the request ID to follow every outcome.</p>
+        </div>
+        <div class="trust-card" aria-label="Workflow protections" data-i18n-aria-label="workflowProtections">
+          <span class="trust-icon" aria-hidden="true">✓</span>
+          <span>
+            <strong data-i18n="traceableTitle">Traceable by design</strong>
+            <small data-i18n="traceableCopy">Identity, evidence, policy route, and review decisions stay linked to one request.</small>
+          </span>
+        </div>
+      </section>
+
+      <section id="session-loading" class="session-state" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>
+          <strong data-i18n="checkingSession">Checking your secure session…</strong>
+          <small data-i18n="checkingSessionHint">Your identity is supplied by the authenticated service.</small>
+        </span>
+      </section>
+
+      <section id="session-error" class="session-state session-error" role="alert" hidden>
+        <span class="state-mark" aria-hidden="true">!</span>
+        <span>
+          <strong id="session-error-title" data-i18n="sessionErrorTitle">We could not open your portal</strong>
+          <small id="session-error-message" data-i18n="sessionErrorMessage">Sign in with an authorized account and try again.</small>
+        </span>
+        <button id="retry-session" class="button button-secondary" type="button" data-i18n="tryAgain">Try again</button>
+      </section>
+
+      <div id="portal-content" hidden>
+        <ol class="progress" aria-label="Submission steps" data-i18n-aria-label="submissionSteps">
+          <li class="is-active" data-phase="details">
+            <span>1</span>
+            <strong data-i18n="stepDetails">Claim details</strong>
+          </li>
+          <li data-phase="evidence">
+            <span>2</span>
+            <strong data-i18n="stepEvidence">Evidence upload</strong>
+          </li>
+          <li data-phase="result">
+            <span>3</span>
+            <strong data-i18n="stepResult">Result</strong>
+          </li>
+        </ol>
+
+        <div class="portal-grid">
+          <section class="panel form-panel" aria-labelledby="form-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow" data-i18n="formEyebrow">New reimbursement</p>
+                <h2 id="form-title" data-i18n="formTitle">Tell us about this expense</h2>
+              </div>
+              <span class="required-note"><span aria-hidden="true">*</span> <span data-i18n="requiredFields">Required fields</span></span>
+            </div>
+
+            <form id="submission-form" novalidate autocomplete="off">
+              <fieldset id="submission-fields">
+                <legend class="visually-hidden" data-i18n="claimInformation">Claim information</legend>
+
+                <div class="field field-wide">
+                  <div class="label-row">
+                    <label for="request-id"><span data-i18n="requestId">Request ID</span> <span aria-hidden="true">*</span></label>
+                    <button id="generate-request-id" class="text-button" type="button" data-i18n="generateNewId">Generate new ID</button>
+                  </div>
+                  <input id="request-id" name="request_id" type="text" minlength="1" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" spellcheck="false" autocapitalize="characters" aria-describedby="request-id-help" required>
+                  <small id="request-id-help" data-i18n="requestIdHelp">Use this exact ID later to find the request across every status.</small>
+                </div>
+
+                <div class="field field-wide identity-field">
+                  <span class="field-label" data-i18n="submittedBy">Submitted by</span>
+                  <div class="verified-value">
+                    <span class="verified-check" aria-hidden="true">✓</span>
+                    <output id="submitted-by">--</output>
+                    <small data-i18n="verifiedIdentity">Verified session identity · cannot be edited</small>
+                  </div>
+                </div>
+
+                <div class="field">
+                  <label for="claimed-amount"><span data-i18n="claimedAmount">Claimed amount</span> <span aria-hidden="true">*</span></label>
+                  <div class="money-field">
+                    <span aria-hidden="true">R$</span>
+                    <input id="claimed-amount" name="claimed_amount" type="text" inputmode="decimal" maxlength="19" placeholder="0,00" data-i18n-placeholder="amountPlaceholder" aria-describedby="amount-help" required>
+                  </div>
+                  <small id="amount-help" data-i18n="amountHelp">Enter an exact BRL amount with up to two decimal places.</small>
+                </div>
+
+                <div class="field">
+                  <label for="claimed-category"><span data-i18n="category">Category</span> <span aria-hidden="true">*</span></label>
+                  <select id="claimed-category" name="claimed_category" required>
+                    <option value="" selected disabled data-i18n="chooseCategory">Choose a category</option>
+                    <option value="meals" data-i18n="categoryMeals">Meals</option>
+                    <option value="client_meal" data-i18n="categoryClientMeal">Client meal</option>
+                    <option value="lodging" data-i18n="categoryLodging">Lodging</option>
+                    <option value="transport" data-i18n="categoryTransport">Transport</option>
+                    <option value="office_supplies" data-i18n="categoryOfficeSupplies">Office supplies</option>
+                    <option value="other" data-i18n="categoryOther">Other</option>
+                  </select>
+                </div>
+
+                <div class="field field-wide">
+                  <label for="receipt-file"><span data-i18n="originalReceipt">Original receipt</span> <span aria-hidden="true">*</span></label>
+                  <label class="file-drop" for="receipt-file">
+                    <span class="file-icon" aria-hidden="true">↑</span>
+                    <span>
+                      <strong id="file-title" data-i18n="chooseReceipt">Choose one receipt file</strong>
+                      <small id="file-description" data-i18n="receiptFormats">JPEG, PNG, or PDF. The original bytes are preserved for traceability.</small>
+                    </span>
+                    <span class="button button-secondary" aria-hidden="true" data-i18n="browseFile">Browse file</span>
+                  </label>
+                  <input id="receipt-file" class="visually-hidden file-input" name="receipt" type="file" accept="image/jpeg,image/png,application/pdf" aria-describedby="file-description file-feedback" required>
+                  <small id="file-feedback" class="file-feedback" aria-live="polite"></small>
+                </div>
+
+                <div class="field field-wide assessment-field">
+                  <div class="assessment-label">
+                    <label for="raw-ocr-text"><span data-i18n="ocrAssessmentInput">OCR text — assessment input</span> <span aria-hidden="true">*</span></label>
+                    <span data-i18n="assessmentOnly">Assessment only</span>
+                  </div>
+                  <textarea id="raw-ocr-text" name="raw_ocr_text" rows="8" maxlength="250000" spellcheck="false" placeholder="Paste the complete OCR output here" data-i18n-placeholder="ocrPlaceholder" aria-describedby="ocr-help" required></textarea>
+                  <div id="ocr-help" class="assessment-note">
+                    <span aria-hidden="true">i</span>
+                    <p data-i18n="ocrAssessmentHelp">This executable receives text already produced by OCR; it does not derive text from the uploaded file yet. The field is preserved as original evidence and must not authorize real payments.</p>
+                  </div>
+                </div>
+              </fieldset>
+
+              <div id="submission-feedback" class="form-feedback" role="alert" hidden></div>
+
+              <div class="form-actions">
+                <p>
+                  <span class="lock" aria-hidden="true">◈</span>
+                  <span data-i18n="submissionNotice">Submitting links your identity, exact file, claim, and processing trace.</span>
+                </p>
+                <button id="submit-request" class="button button-primary" type="submit">
+                  <span id="submit-request-label" data-i18n="submitRequest">Submit reimbursement</span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <aside class="side-column" aria-label="Request tracking" data-i18n-aria-label="requestTracking">
+            <section class="panel tracker-panel" aria-labelledby="tracker-title">
+              <span class="side-icon" aria-hidden="true">⌕</span>
+              <p class="eyebrow" data-i18n="trackerEyebrow">Already submitted?</p>
+              <h2 id="tracker-title" data-i18n="trackerTitle">Track any request by exact ID</h2>
+              <p data-i18n="trackerDescription">This direct lookup searches the authorized database across pending, approved, and rejected states.</p>
+              <form id="tracking-form" novalidate>
+                <label for="tracking-request-id" data-i18n="requestId">Request ID</label>
+                <input id="tracking-request-id" name="tracking_request_id" type="search" minlength="1" maxlength="128" pattern="[A-Za-z0-9][A-Za-z0-9._:-]{0,127}" placeholder="REQ-20260811-XXXXXXXX" data-i18n-placeholder="requestIdPlaceholder" spellcheck="false" autocomplete="off" required>
+                <button id="track-request" class="button button-dark" type="submit">
+                  <span id="track-request-label" data-i18n="findRequest">Find request</span>
+                  <span aria-hidden="true">→</span>
+                </button>
+              </form>
+              <p id="tracking-feedback" class="tracking-feedback" role="alert" hidden></p>
+            </section>
+
+            <section class="support-note" aria-labelledby="privacy-title">
+              <span aria-hidden="true">◉</span>
+              <div>
+                <h3 id="privacy-title" data-i18n="privacyTitle">Your evidence stays protected</h3>
+                <p data-i18n="privacyCopy">The portal does not keep credentials, receipt data, or tokens in browser storage.</p>
+              </div>
+            </section>
+          </aside>
+        </div>
+
+        <section id="result-panel" class="panel result-panel" aria-labelledby="result-title" tabindex="-1" hidden>
+          <div class="result-heading">
+            <div class="result-heading-copy">
+              <span id="result-mark" class="result-mark" aria-hidden="true">✓</span>
+              <div>
+                <p id="result-eyebrow" class="eyebrow" data-i18n="requestLocated">Request located</p>
+                <h2 id="result-title" data-i18n="resultTitle">Your reimbursement status</h2>
+                <p id="result-guidance"></p>
+              </div>
+            </div>
+            <span id="result-status" class="status-badge">--</span>
+          </div>
+
+          <dl class="result-facts">
+            <div>
+              <dt data-i18n="requestId">Request ID</dt>
+              <dd id="result-request-id">--</dd>
+            </div>
+            <div>
+              <dt data-i18n="claimedAmount">Claimed amount</dt>
+              <dd id="result-amount">--</dd>
+            </div>
+            <div>
+              <dt data-i18n="category">Category</dt>
+              <dd id="result-category">--</dd>
+            </div>
+            <div>
+              <dt data-i18n="submittedAt">Submitted at</dt>
+              <dd id="result-submitted-at">--</dd>
+            </div>
+            <div>
+              <dt data-i18n="policyRoute">Policy route</dt>
+              <dd id="result-route">--</dd>
+            </div>
+            <div>
+              <dt data-i18n="extractionStatus">Extraction status</dt>
+              <dd id="result-extraction">--</dd>
+            </div>
+          </dl>
+
+          <div class="reason-block">
+            <div>
+              <h3 data-i18n="explanationTitle">Outcome and explanation</h3>
+              <p data-i18n="explanationCopy">Messages below are rendered as text and keep their original audit wording.</p>
+            </div>
+            <ul id="result-reasons" class="reason-list"></ul>
+          </div>
+
+          <div class="result-actions">
+            <button id="start-another" class="button button-secondary" type="button" data-i18n="submitAnother">Submit another reimbursement</button>
+            <button id="refresh-result" class="button button-dark" type="button">
+              <span aria-hidden="true">↻</span>
+              <span data-i18n="refreshStatus">Refresh status</span>
+            </button>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <div id="announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
