@@ -49,6 +49,22 @@ def _write_headers(client: TestClient, username: str) -> dict[str, str]:
     }
 
 
+def _upload_receipt(client: TestClient, headers: dict[str, str]) -> str:
+    uploaded = client.post(
+        "/api/attachments",
+        headers={
+            **headers,
+            "Content-Type": "application/pdf",
+            "X-Attachment-Filename": "receipt.pdf",
+        },
+        content=PDF_BYTES,
+    )
+    assert uploaded.status_code == 201
+    reference = uploaded.json()["reference"]
+    assert isinstance(reference, str)
+    return reference
+
+
 def _payload(request_id: str, submitted_by: str, amount: str = "93.50") -> dict[str, object]:
     return {
         "request_id": request_id,
@@ -63,8 +79,20 @@ def _payload(request_id: str, submitted_by: str, amount: str = "93.50") -> dict[
         ),
         "claimed_category": "meals",
         "claimed_amount_brl": amount,
-        "attachments": ["receipt.jpg"],
+        "attachments": [],
     }
+
+
+def _payload_with_receipt(
+    client: TestClient,
+    headers: dict[str, str],
+    request_id: str,
+    submitted_by: str,
+    amount: str = "93.50",
+) -> dict[str, object]:
+    payload = _payload(request_id, submitted_by, amount)
+    payload["attachments"] = [_upload_receipt(client, headers)]
+    return payload
 
 
 def _client(tmp_path: Path) -> tuple[TestClient, Path]:
@@ -102,7 +130,12 @@ def test_roles_gate_surfaces_mutations_and_cross_submitter_results(tmp_path: Pat
     created = client.post(
         "/api/requests",
         headers=alice_write,
-        json=_payload("REQ-ALICE-1", "alice@example.com"),
+        json=_payload_with_receipt(
+            client,
+            alice_write,
+            "REQ-ALICE-1",
+            "alice@example.com",
+        ),
     )
     spoofed = client.post(
         "/api/requests",
@@ -166,7 +199,13 @@ def test_decisions_require_reviewer_role_and_block_self_review(tmp_path: Path) -
     created = client.post(
         "/api/requests",
         headers=charlie_write,
-        json=_payload("REQ-CHARLIE-1", "charlie@example.com", amount="640.00"),
+        json=_payload_with_receipt(
+            client,
+            charlie_write,
+            "REQ-CHARLIE-1",
+            "charlie@example.com",
+            amount="640.00",
+        ),
     )
     assert created.status_code == 201
     assert created.json()["status"] == "pending_review"
@@ -220,12 +259,23 @@ def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path)
     on_behalf = client.post(
         "/api/requests",
         headers=admin_write,
-        json=_payload("REQ-ADMIN-BEHALF", "employee@example.com"),
+        json=_payload_with_receipt(
+            client,
+            admin_write,
+            "REQ-ADMIN-BEHALF",
+            "employee@example.com",
+        ),
     )
     own = client.post(
         "/api/requests",
         headers=admin_write,
-        json=_payload("REQ-ADMIN-OWN", "admin@example.com", amount="640.00"),
+        json=_payload_with_receipt(
+            client,
+            admin_write,
+            "REQ-ADMIN-OWN",
+            "admin@example.com",
+            amount="640.00",
+        ),
     )
 
     assert on_behalf.status_code == 201
@@ -246,7 +296,7 @@ def test_admin_can_submit_on_behalf_but_still_cannot_self_review(tmp_path: Path)
 def test_managed_attachment_must_exist_and_pass_integrity_before_intake(
     tmp_path: Path,
 ) -> None:
-    client, _database_path = _client(tmp_path)
+    client, database_path = _client(tmp_path)
     alice_write = _write_headers(client, "alice")
     uploaded = client.post(
         "/api/attachments",
@@ -271,8 +321,28 @@ def test_managed_attachment_must_exist_and_pass_integrity_before_intake(
     malformed_payload["attachments"] = ["evidence:not-an-opaque-id"]
     malformed = client.post("/api/requests", headers=alice_write, json=malformed_payload)
 
+    legacy_payload = _payload("REQ-LEGACY-REJECTED", "alice@example.com")
+    legacy_payload["attachments"] = ["object://legacy/receipt.pdf"]
+    legacy = client.post("/api/requests", headers=alice_write, json=legacy_payload)
+
     assert accepted.status_code == 201
     assert missing.status_code == 422
     assert missing.json()["detail"] == "Managed attachment reference does not exist"
     assert malformed.status_code == 422
     assert malformed.json()["detail"] == "Managed attachment reference is invalid"
+    assert legacy.status_code == 422
+    assert legacy.json()["detail"] == "Attachment references must use managed evidence IDs"
+
+    with sqlite3.connect(database_path) as connection:
+        rejected_operations = connection.execute(
+            """
+            SELECT metadata_json FROM operational_audit_events
+            WHERE operation_type = 'reimbursement_submit' AND status_code = 422
+            """
+        ).fetchall()
+    metadata = [json.loads(row[0]) for row in rejected_operations]
+    assert any(
+        item.get("error_kind") == "unmanaged_attachment_reference"
+        and item.get("attachment_reference_policy") == "managed_only"
+        for item in metadata
+    )

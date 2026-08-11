@@ -3,9 +3,12 @@ import runpy
 import subprocess
 import sys
 import tomllib
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+
+from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 
 PROJECT_ROOT = Path(__file__).parents[1]
 AWS_DEPLOY = PROJECT_ROOT / "deploy" / "aws"
@@ -83,3 +86,24 @@ def test_seed_helper_requires_a_bare_https_origin() -> None:
     )
     with pytest.raises(SystemExit, match="HTTPS origin"):
         validate("http://example.com/api")
+
+
+def test_seed_helper_generates_in_memory_pdf_and_uses_managed_uploads(tmp_path: Path) -> None:
+    source = (AWS_DEPLOY / "seed_demo.py").read_text(encoding="utf-8")
+    namespace = runpy.run_path(str(AWS_DEPLOY / "seed_demo.py"))
+    pdf = namespace["_synthetic_receipt_pdf"]()
+
+    stored = FileSystemAttachmentStore(tmp_path / "evidence").store(
+        BytesIO(pdf),
+        original_filename="synthetic-assessment-receipt.pdf",
+        declared_media_type="application/pdf",
+    )
+    xref_offset = int(pdf.rsplit(b"startxref\n", 1)[1].splitlines()[0])
+
+    assert pdf.startswith(b"%PDF-1.4")
+    assert pdf[xref_offset:].startswith(b"xref\n")
+    assert pdf.rstrip().endswith(b"%%EOF")
+    assert stored.media_type.value == "application/pdf"
+    assert "/api/attachments" in source
+    assert 'payload["attachments"] = [reference]' in source
+    assert not (AWS_DEPLOY / "synthetic-assessment-receipt.pdf").exists()

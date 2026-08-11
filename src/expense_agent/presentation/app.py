@@ -1356,15 +1356,20 @@ def _verify_managed_attachments(
     submission: ReimbursementSubmission,
     store: AttachmentStore | None,
 ) -> None:
-    managed_references = tuple(
-        attachment.location
-        for attachment in submission.attachments
-        if attachment.location.startswith(MANAGED_ATTACHMENT_PREFIX)
-    )
-    if not managed_references:
+    references = tuple(attachment.location for attachment in submission.attachments)
+    if not references:
         return
+
+    if any(not reference.startswith(MANAGED_ATTACHMENT_PREFIX) for reference in references):
+        _mark_operational_error(request, "unmanaged_attachment_reference")
+        _add_operational_metadata(request, attachment_reference_policy="managed_only")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Attachment references must use managed evidence IDs",
+        )
+
     managed_store = _require_attachment_store(store)
-    for reference in managed_references:
+    for reference in references:
         attachment_id = reference.removeprefix(MANAGED_ATTACHMENT_PREFIX)
         if ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None:
             _mark_operational_error(request, "invalid_managed_attachment_reference")
@@ -1388,7 +1393,7 @@ def _verify_managed_attachments(
             ) from exc
     _add_operational_metadata(
         request,
-        managed_attachment_count=len(managed_references),
+        managed_attachment_count=len(references),
     )
 
 

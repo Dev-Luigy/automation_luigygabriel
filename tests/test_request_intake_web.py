@@ -26,6 +26,7 @@ from expense_agent.domain import (
     ReimbursementStatus,
     ReimbursementSubmission,
 )
+from expense_agent.infrastructure.attachments import FileSystemAttachmentStore
 from expense_agent.infrastructure.extraction import DeterministicReceiptExtractor
 from expense_agent.infrastructure.review import SqliteReviewRepository
 from expense_agent.presentation.app import create_app
@@ -41,6 +42,7 @@ AUTHORIZATION = "Basic cmV2aWV3ZXI6c2VjcmV0LXBhc3M="
 AUTHENTICATED_HEADERS = {"Authorization": AUTHORIZATION}
 ORIGIN = "https://testserver"
 SECRET_PARAMETER = "provider-secret-must-not-leave-the-technical-boundary"
+PDF_BYTES = b"%PDF-1.7\n1 0 obj\n<<>>\nendobj\n%%EOF\n"
 
 
 class InMemoryProcessingService:
@@ -149,7 +151,7 @@ class InMemoryOperationalAuditRecorder:
         self.events.append(event)
 
 
-def _client() -> tuple[TestClient, InMemoryProcessingService]:
+def _client(tmp_path: Path) -> tuple[TestClient, InMemoryProcessingService]:
     processing_service = InMemoryProcessingService()
     audit_recorder = InMemoryOperationalAuditRecorder()
     app = create_app(
@@ -160,6 +162,7 @@ def _client() -> tuple[TestClient, InMemoryProcessingService]:
         require_https=True,
         allowed_hosts=("testserver",),
         operational_audit_recorder=audit_recorder,
+        attachment_store=FileSystemAttachmentStore(tmp_path / "evidence"),
     )
     return TestClient(app, base_url=ORIGIN), processing_service
 
@@ -185,6 +188,7 @@ def _real_client(tmp_path: Path) -> tuple[TestClient, Path]:
         csrf=CsrfProtector("test-csrf-secret-that-is-long-enough"),
         require_https=True,
         allowed_hosts=("testserver",),
+        attachment_store=FileSystemAttachmentStore(tmp_path / "evidence"),
     )
     return TestClient(app, base_url=ORIGIN), database_path
 
@@ -198,6 +202,32 @@ def _write_headers(client: TestClient) -> dict[str, str]:
         "X-CSRF-Token": session.json()["csrf_token"],
         "X-Correlation-ID": "intake-http-test",
     }
+
+
+def _upload_receipt(client: TestClient, headers: dict[str, str]) -> str:
+    uploaded = client.post(
+        "/api/attachments",
+        headers={
+            **headers,
+            "Content-Type": "application/pdf",
+            "X-Attachment-Filename": "receipt.pdf",
+        },
+        content=PDF_BYTES,
+    )
+    assert uploaded.status_code == 201
+    reference = uploaded.json()["reference"]
+    assert isinstance(reference, str)
+    return reference
+
+
+def _payload_with_receipt(
+    client: TestClient,
+    headers: dict[str, str],
+    **payload_options: object,
+) -> dict[str, object]:
+    payload = _payload(**payload_options)
+    payload["attachments"] = [_upload_receipt(client, headers)]
+    return payload
 
 
 def _payload(
@@ -219,12 +249,12 @@ def _payload(
         ),
         "claimed_category": "meals",
         "claimed_amount_brl": amount,
-        "attachments": ["receipt_0001.jpg"],
+        "attachments": [],
     }
 
 
-def test_intake_requires_authentication_csrf_same_origin_and_json() -> None:
-    client, _service = _client()
+def test_intake_requires_authentication_csrf_same_origin_and_json(tmp_path: Path) -> None:
+    client, _service = _client(tmp_path)
     payload = _payload()
     write_headers = _write_headers(client)
 
@@ -255,14 +285,39 @@ def test_intake_requires_authentication_csrf_same_origin_and_json() -> None:
     assert non_json.status_code == 415
 
 
-def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result() -> None:
-    client, service = _client()
+def test_intake_rejects_legacy_attachment_references_but_allows_an_empty_list(
+    tmp_path: Path,
+) -> None:
+    client, service = _client(tmp_path)
+    headers = _write_headers(client)
+    legacy_payload = _payload(request_id="REQ-LEGACY-REFERENCE")
+    legacy_payload["attachments"] = ["receipt_0001.jpg"]
+
+    rejected = client.post("/api/requests", headers=headers, json=legacy_payload)
+    accepted = client.post(
+        "/api/requests",
+        headers=headers,
+        json=_payload(request_id="REQ-WITHOUT-EVIDENCE"),
+    )
+
+    assert rejected.status_code == 422
+    assert rejected.json()["detail"] == "Attachment references must use managed evidence IDs"
+    assert accepted.status_code == 201
+    assert accepted.json()["status"] == "pending_review"
+    assert len(service.submissions) == 1
+
+
+def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
+    tmp_path: Path,
+) -> None:
+    client, service = _client(tmp_path)
     write_headers = _write_headers(client)
+    payload = _payload_with_receipt(client, write_headers)
 
     created = client.post(
         "/api/requests",
         headers=write_headers,
-        json=_payload(),
+        json=payload,
     )
     fetched = client.get("/api/requests/REQ-HTTP-0001", headers=AUTHENTICATED_HEADERS)
 
@@ -283,7 +338,7 @@ def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
     ]
     serialized = created.text + fetched.text
     assert "raw_ocr_text" not in serialized
-    assert "receipt_0001.jpg" not in serialized
+    assert payload["attachments"][0] not in serialized
     assert "raw_response" not in serialized
     assert "processing_run" not in serialized
     assert "invocation" not in serialized
@@ -293,7 +348,12 @@ def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
         "/api/requests",
         headers=write_headers,
         json={
-            **_payload(request_id="REQ-HTTP-PENDING", amount="640.00"),
+            **_payload_with_receipt(
+                client,
+                write_headers,
+                request_id="REQ-HTTP-PENDING",
+                amount="640.00",
+            ),
             "raw_ocr_text": (
                 "GRAND PLAZA HOTEL\n"
                 "TAX ID 45.678.901/0001-56\n"
@@ -315,10 +375,17 @@ def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
     assert pending_lookup.json()["review"]["status"] == "pending"
 
 
-def test_exact_replay_is_200_but_same_id_with_different_payload_is_409() -> None:
-    client, service = _client()
+def test_exact_replay_is_200_but_same_id_with_different_payload_is_409(
+    tmp_path: Path,
+) -> None:
+    client, service = _client(tmp_path)
     headers = _write_headers(client)
-    numeric = _payload(request_id="REQ-IDEMPOTENT", amount=0.1)
+    numeric = _payload_with_receipt(
+        client,
+        headers,
+        request_id="REQ-IDEMPOTENT",
+        amount=0.1,
+    )
     canonical_string = {**numeric, "claimed_amount_brl": "0.10"}
 
     created = client.post("/api/requests", headers=headers, json=numeric)
@@ -342,8 +409,8 @@ def test_exact_replay_is_200_but_same_id_with_different_payload_is_409() -> None
     "amount",
     ["1e2", "NaN", "1.001", 1.001, True, "0.00", "-1.00"],
 )
-def test_intake_rejects_non_plain_or_invalid_money(amount: object) -> None:
-    client, _service = _client()
+def test_intake_rejects_non_plain_or_invalid_money(amount: object, tmp_path: Path) -> None:
+    client, _service = _client(tmp_path)
 
     response = client.post(
         "/api/requests",
@@ -354,8 +421,10 @@ def test_intake_rejects_non_plain_or_invalid_money(amount: object) -> None:
     assert response.status_code == 422
 
 
-def test_intake_rejects_nonstandard_json_nan_if_the_parser_accepts_it() -> None:
-    client, _service = _client()
+def test_intake_rejects_nonstandard_json_nan_if_the_parser_accepts_it(
+    tmp_path: Path,
+) -> None:
+    client, _service = _client(tmp_path)
     payload = _payload()
     payload["claimed_amount_brl"] = float("nan")
 
@@ -370,10 +439,11 @@ def test_intake_rejects_nonstandard_json_nan_if_the_parser_accepts_it() -> None:
     assert "NaN" not in response.text
 
 
-def test_intake_rejects_json_float_above_safe_integer_precision() -> None:
-    client, service = _client()
+def test_intake_rejects_json_float_above_safe_integer_precision(tmp_path: Path) -> None:
+    client, service = _client(tmp_path)
     headers = _write_headers(client)
-    encoded = json.dumps(_payload()).replace(
+    payload = _payload_with_receipt(client, headers)
+    encoded = json.dumps(payload).replace(
         '"claimed_amount_brl": "93.50"',
         '"claimed_amount_brl": 70368744177664.01',
     )
@@ -386,7 +456,9 @@ def test_intake_rejects_json_float_above_safe_integer_precision() -> None:
     exact_string = client.post(
         "/api/requests",
         headers=headers,
-        json=_payload(
+        json=_payload_with_receipt(
+            client,
+            headers,
             request_id="REQ-LARGE-DECIMAL-STRING",
             amount="70368744177664.01",
         ),
@@ -410,13 +482,14 @@ def test_intake_rejects_json_float_above_safe_integer_precision() -> None:
         {"submitted_at": 1_776_000_000},
         {"submitted_by": "not-an-email"},
         {"unexpected": "field"},
-        {"attachments": ["same.jpg", "same.jpg"]},
+        {"attachments": [f"evidence:att_{'0' * 32}", f"evidence:att_{'0' * 32}"]},
     ],
 )
 def test_intake_rejects_naive_timestamp_invalid_submitter_and_unknown_fields(
     mutation: dict[str, object],
+    tmp_path: Path,
 ) -> None:
-    client, _service = _client()
+    client, _service = _client(tmp_path)
 
     response = client.post(
         "/api/requests",
@@ -427,8 +500,8 @@ def test_intake_rejects_naive_timestamp_invalid_submitter_and_unknown_fields(
     assert response.status_code == 422
 
 
-def test_request_lookup_requires_authentication_and_returns_404() -> None:
-    client, _service = _client()
+def test_request_lookup_requires_authentication_and_returns_404(tmp_path: Path) -> None:
+    client, _service = _client(tmp_path)
 
     unauthenticated = client.get("/api/requests/UNKNOWN")
     missing = client.get("/api/requests/UNKNOWN", headers=AUTHENTICATED_HEADERS)
@@ -463,7 +536,11 @@ def test_request_routes_fail_closed_when_processing_is_not_composed() -> None:
 def test_real_sqlite_http_pipeline_is_idempotent_audited_and_queryable(tmp_path: Path) -> None:
     client, database_path = _real_client(tmp_path)
     headers = _write_headers(client)
-    payload = _payload(request_id="REQ-REAL-PIPELINE")
+    payload = _payload_with_receipt(
+        client,
+        headers,
+        request_id="REQ-REAL-PIPELINE",
+    )
 
     created = client.post("/api/requests", headers=headers, json=payload)
     replayed = client.post("/api/requests", headers=headers, json=payload)

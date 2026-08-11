@@ -224,7 +224,7 @@ def test_unhandled_orchestration_failure_is_recorded_once_without_error_message(
         "raw_ocr_text": "TOP-SECRET-OCR",
         "claimed_category": "meals",
         "claimed_amount_brl": "10.00",
-        "attachments": ["private-original.jpg"],
+        "attachments": [],
     }
 
     response = client.post(
