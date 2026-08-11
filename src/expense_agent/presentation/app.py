@@ -792,6 +792,7 @@ def create_app(
         )
         content = _request_result(outcome.result)
         content["created"] = outcome.created
+        content["recovered"] = outcome.recovered
         content["replayed"] = outcome.replayed
         return JSONResponse(
             status_code=201 if outcome.created else 200,

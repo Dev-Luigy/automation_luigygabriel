@@ -270,6 +270,7 @@ def test_intake_preserves_submitter_derives_audit_actor_and_returns_safe_result(
     assert created.headers["location"] == "/api/requests/REQ-HTTP-0001"
     assert created.headers["x-correlation-id"] == "intake-http-test"
     assert created.json()["created"] is True
+    assert created.json()["recovered"] is False
     assert created.json()["replayed"] is False
     assert fetched.status_code == 200
     assert fetched.json()["status"] == "auto_approved"
