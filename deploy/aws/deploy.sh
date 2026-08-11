@@ -40,6 +40,14 @@ if [[ ! "${ea_environment_name}" =~ ^[a-z][a-z0-9-]{2,31}$ ]]; then
     echo "EA_ENVIRONMENT_NAME must match ^[a-z][a-z0-9-]{2,31}$." >&2
     exit 1
 fi
+if [[ "${ea_reviewer_username}" == "sandbox-seed" ]]; then
+    echo "EA_REVIEWER_USERNAME uses the reserved synthetic seed identity." >&2
+    exit 1
+fi
+if [[ "${ea_reviewer_id}" == "assessment:seed-submitter" ]]; then
+    echo "EA_REVIEWER_ID uses the reserved synthetic seed identity." >&2
+    exit 1
+fi
 
 ea_aws_global=(--region "${ea_region}")
 ea_sam_profile=()
@@ -83,6 +91,11 @@ else
     unset ea_reviewer_confirmation
 fi
 ea_csrf_secret="${EA_CSRF_SECRET:-$(openssl rand -hex 32)}"
+ea_seed_password="$(openssl rand -hex 32)"
+ea_seed_password_hash="$(
+    printf '%s\n' "${ea_seed_password}" |
+        uv run --frozen expense-agent-hash-password --password-stdin
+)"
 
 echo "Validating and building the Lambda artifact in an AWS build container..."
 python3 deploy/aws/prepare_build.py
@@ -107,6 +120,7 @@ sam deploy \
         "ParameterKey=ReviewerEmail,ParameterValue=${ea_reviewer_email}" \
         "ParameterKey=ReviewerDisplayName,ParameterValue=${ea_reviewer_display_name}" \
         "ParameterKey=ReviewerPasswordHash,ParameterValue=${ea_reviewer_password_hash}" \
+        "ParameterKey=SeedPasswordHash,ParameterValue=${ea_seed_password_hash}" \
         "ParameterKey=CsrfSecret,ParameterValue=${ea_csrf_secret}"
 
 ea_api_url="$(
@@ -122,18 +136,17 @@ if [[ -z "${ea_api_url}" || "${ea_api_url}" == "None" ]]; then
     exit 1
 fi
 
-if [[ "${EA_SEED_DEMO:-true}" == "true" && -n "${ea_reviewer_password}" ]]; then
-    echo "Seeding the three provided synthetic assignment samples through HTTPS..."
-    printf '%s\n' "${ea_reviewer_password}" |
+if [[ "${EA_SEED_DEMO:-true}" == "true" ]]; then
+    echo "Seeding the three provided samples with a distinct synthetic actor..."
+    printf '%s\n' "${ea_seed_password}" |
         uv run --frozen python deploy/aws/seed_demo.py \
             --base-url "${ea_api_url}" \
-            --username "${ea_reviewer_username}" \
+            --username sandbox-seed \
             --password-stdin
-elif [[ "${EA_SEED_DEMO:-true}" == "true" ]]; then
-    echo "Demo seed skipped because only a password hash was supplied."
 fi
 
-unset ea_reviewer_password ea_reviewer_password_hash ea_csrf_secret
+unset ea_reviewer_password ea_reviewer_password_hash ea_seed_password
+unset ea_seed_password_hash ea_csrf_secret
 echo
 echo "Assessment sandbox deployed."
 echo "Submit UI: ${ea_api_url}/submit"

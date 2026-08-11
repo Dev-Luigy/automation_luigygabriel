@@ -37,7 +37,7 @@ def test_lambda_requirements_are_exact_pins_present_in_uv_lock() -> None:
 def test_sam_sandbox_keeps_secrets_out_of_source_and_marks_safety_boundary() -> None:
     template = (AWS_DEPLOY / "template.yaml").read_text(encoding="utf-8")
 
-    assert template.count("NoEcho: true") == 2
+    assert template.count("NoEcho: true") == 3
     assert "Encrypted: true" in template
     assert template.count("DeletionPolicy: Retain") == 1
     assert "EXPENSE_AGENT_SQLITE_JOURNAL_MODE: DELETE" in template
@@ -46,6 +46,8 @@ def test_sam_sandbox_keeps_secrets_out_of_source_and_marks_safety_boundary() -> 
     assert "ReservedConcurrentExecutions: 4" in template
     assert "ASSESSMENT SANDBOX ONLY" in template
     assert "password_hash\":\"${ReviewerPasswordHash}" in template
+    assert "password_hash\":\"${SeedPasswordHash}" in template
+    assert '"reviewer_id":"assessment:seed-submitter"' in template
     assert "Runtime: python3.12" in template
     assert "Handler: expense_agent.presentation.lambda_handler.handler" in template
     assert "CodeUri: .build/lambda" in template
