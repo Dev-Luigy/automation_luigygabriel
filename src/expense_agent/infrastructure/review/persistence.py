@@ -37,6 +37,7 @@ from expense_agent.application.workflow import (
     ExtractionSnapshot,
     InvocationStatus,
     InvocationSummary,
+    ProcessingLeaseClaim,
     ProcessingRunStatus,
     ProcessingRunSummary,
     RequestConflictError,
@@ -249,15 +250,26 @@ CREATE TABLE IF NOT EXISTS processing_runs (
     input_hash TEXT NOT NULL CHECK (length(trim(input_hash)) > 0),
     status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
     started_at TEXT NOT NULL,
+    lease_expires_at TEXT,
     completed_at TEXT,
     error TEXT,
+    abandoned_at TEXT,
     correlation_id TEXT NOT NULL CHECK (length(trim(correlation_id)) > 0),
     UNIQUE (request_id, run_number),
     UNIQUE (processing_run_id, request_id),
     CHECK (
-        (status = 'running' AND completed_at IS NULL AND error IS NULL)
-        OR (status = 'completed' AND completed_at IS NOT NULL AND error IS NULL)
-        OR (status = 'failed' AND completed_at IS NOT NULL AND length(trim(error)) > 0)
+        (
+            status = 'running' AND lease_expires_at IS NOT NULL
+            AND completed_at IS NULL AND error IS NULL AND abandoned_at IS NULL
+        )
+        OR (
+            status = 'completed' AND lease_expires_at IS NULL
+            AND completed_at IS NOT NULL AND error IS NULL AND abandoned_at IS NULL
+        )
+        OR (
+            status = 'failed' AND lease_expires_at IS NULL
+            AND completed_at IS NOT NULL AND length(trim(error)) > 0
+        )
     )
 );
 
@@ -282,6 +294,7 @@ CREATE TABLE IF NOT EXISTS processing_invocation_attempts (
     raw_response TEXT,
     error TEXT,
     invoked_at TEXT NOT NULL,
+    abandoned_at TEXT,
     completed_at TEXT,
     duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
     parameters_json TEXT NOT NULL,
@@ -291,10 +304,12 @@ CREATE TABLE IF NOT EXISTS processing_invocation_attempts (
     CHECK (
         (
             status = 'running' AND output_hash IS NULL AND raw_response IS NULL
-            AND error IS NULL AND completed_at IS NULL AND duration_ms IS NULL
+            AND error IS NULL AND abandoned_at IS NULL
+            AND completed_at IS NULL AND duration_ms IS NULL
         ) OR (
             status = 'succeeded' AND length(trim(output_hash)) > 0
             AND raw_response IS NOT NULL AND error IS NULL
+            AND abandoned_at IS NULL
             AND completed_at IS NOT NULL AND duration_ms IS NOT NULL
         ) OR (
             status = 'failed' AND length(trim(output_hash)) > 0
@@ -306,6 +321,40 @@ CREATE TABLE IF NOT EXISTS processing_invocation_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_invocations_request_run
     ON processing_invocation_attempts(request_id, processing_run_id, stage, attempt);
+
+CREATE TRIGGER IF NOT EXISTS processing_runs_lease_state_insert_v2
+BEFORE INSERT ON processing_runs
+WHEN
+    (NEW.status = 'running' AND NEW.lease_expires_at IS NULL)
+    OR (NEW.status <> 'running' AND NEW.lease_expires_at IS NOT NULL)
+    OR (NEW.abandoned_at IS NOT NULL AND NEW.status <> 'failed')
+BEGIN
+    SELECT RAISE(ABORT, 'processing run lease state is invalid');
+END;
+
+CREATE TRIGGER IF NOT EXISTS processing_runs_lease_state_update_v2
+BEFORE UPDATE ON processing_runs
+WHEN
+    (NEW.status = 'running' AND NEW.lease_expires_at IS NULL)
+    OR (NEW.status <> 'running' AND NEW.lease_expires_at IS NOT NULL)
+    OR (NEW.abandoned_at IS NOT NULL AND NEW.status <> 'failed')
+BEGIN
+    SELECT RAISE(ABORT, 'processing run lease state is invalid');
+END;
+
+CREATE TRIGGER IF NOT EXISTS processing_invocations_abandoned_state_insert_v2
+BEFORE INSERT ON processing_invocation_attempts
+WHEN NEW.abandoned_at IS NOT NULL AND NEW.status <> 'failed'
+BEGIN
+    SELECT RAISE(ABORT, 'invocation abandonment state is invalid');
+END;
+
+CREATE TRIGGER IF NOT EXISTS processing_invocations_abandoned_state_update_v2
+BEFORE UPDATE ON processing_invocation_attempts
+WHEN NEW.abandoned_at IS NOT NULL AND NEW.status <> 'failed'
+BEGIN
+    SELECT RAISE(ABORT, 'invocation abandonment state is invalid');
+END;
 
 CREATE TRIGGER IF NOT EXISTS processing_runs_terminal_no_update
 BEFORE UPDATE ON processing_runs
@@ -542,6 +591,10 @@ END;
 
 _HIGH_VALUE_THRESHOLD = Money.brl("2000.00")
 _AMOUNT_MISMATCH_CODES = ("AMOUNT_MISMATCH", "TOTAL_MISMATCH")
+_LEGACY_PROCESSING_LEASE = timedelta(minutes=5)
+_ABANDONED_RUN_ERROR = "processing lease expired; run abandoned"
+_ABANDONED_INVOCATION_ERROR = "processing lease expired before invocation completion"
+_EMPTY_OUTPUT_HASH = hashlib.sha256(b"").hexdigest()
 _BUSINESS_EVENT_PAYLOAD_FIELDS = {
     "reimbursement_received": (
         "attachment_count",
@@ -555,6 +608,19 @@ _BUSINESS_EVENT_PAYLOAD_FIELDS = {
         "processing_run_id",
         "request_version",
         "result_version",
+        "to_status",
+    ),
+    "reimbursement_processing_resumed": (
+        "abandoned_at",
+        "abandoned_processing_run_id",
+        "expired_lease_at",
+        "from_status",
+        "pipeline_version",
+        "processing_run_id",
+        "reason",
+        "request_version",
+        "result_version",
+        "run_number",
         "to_status",
     ),
     "automated_decision_recorded": (
@@ -702,6 +768,44 @@ class SqliteReviewRepository:
         if "processing_run_id" not in decision_columns:
             connection.execute(
                 "ALTER TABLE automated_decisions ADD COLUMN processing_run_id TEXT"
+            )
+
+        processing_run_columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(processing_runs)")
+        }
+        if processing_run_columns:
+            if "lease_expires_at" not in processing_run_columns:
+                connection.execute(
+                    "ALTER TABLE processing_runs ADD COLUMN lease_expires_at TEXT"
+                )
+            if "abandoned_at" not in processing_run_columns:
+                connection.execute("ALTER TABLE processing_runs ADD COLUMN abandoned_at TEXT")
+            for row in connection.execute(
+                """
+                SELECT processing_run_id, started_at FROM processing_runs
+                WHERE status = 'running' AND lease_expires_at IS NULL
+                """
+            ).fetchall():
+                legacy_expiry = _timestamp_from_db(row["started_at"]) + (
+                    _LEGACY_PROCESSING_LEASE
+                )
+                connection.execute(
+                    """
+                    UPDATE processing_runs SET lease_expires_at = ?
+                    WHERE processing_run_id = ? AND status = 'running'
+                    """,
+                    (_timestamp_to_db(legacy_expiry), row["processing_run_id"]),
+                )
+
+        invocation_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(processing_invocation_attempts)"
+            )
+        }
+        if invocation_columns and "abandoned_at" not in invocation_columns:
+            connection.execute(
+                "ALTER TABLE processing_invocation_attempts ADD COLUMN abandoned_at TEXT"
             )
 
         rows = connection.execute(
@@ -1154,8 +1258,43 @@ class SqliteReviewRepository:
         started_at: datetime,
         correlation_id: str,
         audit_event: AuditEvent,
+        lease_expires_at: datetime | None = None,
     ) -> int:
-        """Atomically claim a received request and make its processing state visible."""
+        """Compatibility wrapper around the explicit processing-lease claim."""
+
+        claim = self.claim_processing(
+            request_id=request_id,
+            processing_run_id=processing_run_id,
+            pipeline_version=pipeline_version,
+            input_hash=input_hash,
+            expected_version=expected_version,
+            started_at=started_at,
+            lease_expires_at=(
+                lease_expires_at
+                if lease_expires_at is not None
+                else started_at + _LEGACY_PROCESSING_LEASE
+            ),
+            correlation_id=correlation_id,
+            audit_event=audit_event,
+        )
+        if not claim.acquired and claim.processing_run_id != processing_run_id:
+            raise RequestConflictError("request is already owned by another processing run")
+        return claim.result.version
+
+    def claim_processing(
+        self,
+        *,
+        request_id: str,
+        processing_run_id: str,
+        pipeline_version: str,
+        input_hash: str,
+        expected_version: int,
+        started_at: datetime,
+        lease_expires_at: datetime,
+        correlation_id: str,
+        audit_event: AuditEvent,
+    ) -> ProcessingLeaseClaim:
+        """Claim initial work or atomically recover one expired processing lease."""
 
         normalized_request_id = require_non_blank(request_id, "request_id")
         normalized_run_id = require_non_blank(processing_run_id, "processing_run_id")
@@ -1163,6 +1302,9 @@ class SqliteReviewRepository:
         normalized_input_hash = require_non_blank(input_hash, "input_hash")
         normalized_correlation = require_non_blank(correlation_id, "correlation_id")
         require_aware_datetime(started_at, "started_at")
+        require_aware_datetime(lease_expires_at, "lease_expires_at")
+        if lease_expires_at <= started_at:
+            raise DomainValidationError("lease_expires_at must be after started_at")
         if not isinstance(expected_version, int) or isinstance(expected_version, bool):
             raise DomainValidationError("expected_version must be an integer")
         self._validate_workflow_event(
@@ -1180,59 +1322,143 @@ class SqliteReviewRepository:
             ).fetchone()
             if state is None:
                 raise RequestNotFoundError(f"request {normalized_request_id!r} was not found")
-            existing_run = connection.execute(
+            latest_run = connection.execute(
                 """
-                SELECT processing_run_id, request_id, pipeline_version, input_hash
-                FROM processing_runs WHERE processing_run_id = ?
+                SELECT
+                    processing_run_id, request_id, run_number, pipeline_version,
+                    input_hash, status, started_at, lease_expires_at
+                FROM processing_runs
+                WHERE request_id = ?
+                ORDER BY run_number DESC LIMIT 1
                 """,
+                (normalized_request_id,),
+            ).fetchone()
+            if state["status"] not in {
+                ReimbursementStatus.RECEIVED.value,
+                ReimbursementStatus.PROCESSING.value,
+            }:
+                result = self._read_request_result(connection, normalized_request_id)
+                if result is None:
+                    raise RuntimeError("terminal reimbursement disappeared during lease claim")
+                connection.rollback()
+                return ProcessingLeaseClaim(
+                    acquired=False,
+                    result=result,
+                    processing_run_id=(
+                        latest_run["processing_run_id"] if latest_run is not None else None
+                    ),
+                )
+
+            resumed = state["status"] == ReimbursementStatus.PROCESSING.value
+            if resumed:
+                if latest_run is None or latest_run["status"] != ProcessingRunStatus.RUNNING.value:
+                    raise RequestConflictError(
+                        "processing reimbursement has no matching running lease"
+                    )
+                raw_expiry = latest_run["lease_expires_at"]
+                if raw_expiry is None:
+                    raise RequestConflictError("processing run has no lease expiry")
+                if _timestamp_from_db(raw_expiry) > started_at:
+                    result = self._read_request_result(connection, normalized_request_id)
+                    if result is None:
+                        raise RuntimeError("active processing reimbursement disappeared")
+                    connection.rollback()
+                    return ProcessingLeaseClaim(
+                        acquired=False,
+                        result=result,
+                        processing_run_id=latest_run["processing_run_id"],
+                    )
+                self._abandon_expired_run(
+                    connection,
+                    run=latest_run,
+                    abandoned_at=started_at,
+                    next_processing_run_id=normalized_run_id,
+                    audit_event=audit_event,
+                )
+                run_number = latest_run["run_number"] + 1
+            else:
+                if state["version"] != expected_version:
+                    raise RequestConflictError(
+                        "request is no longer received at the expected version"
+                    )
+                if latest_run is not None:
+                    raise RequestConflictError("received reimbursement already has a processing run")
+                run_number = 1
+
+            conflicting_run_id = connection.execute(
+                "SELECT 1 FROM processing_runs WHERE processing_run_id = ?",
                 (normalized_run_id,),
             ).fetchone()
-            if existing_run is not None:
-                if (
-                    existing_run["pipeline_version"] == normalized_pipeline
-                    and existing_run["input_hash"] == normalized_input_hash
-                    and existing_run["request_id"] == normalized_request_id
-                    and state["status"] == ReimbursementStatus.PROCESSING.value
-                ):
-                    connection.rollback()
-                    return state["version"]
+            if conflicting_run_id is not None:
                 raise RequestConflictError("processing run ID conflicts with existing metadata")
-            if (
-                state["status"] != ReimbursementStatus.RECEIVED.value
-                or state["version"] != expected_version
-            ):
-                raise RequestConflictError(
-                    "request is no longer received at the expected version"
-                )
             connection.execute(
                 """
                 INSERT INTO processing_runs (
                     processing_run_id, request_id, run_number, pipeline_version,
-                    input_hash, status, started_at, completed_at, error, correlation_id
-                ) VALUES (?, ?, 1, ?, ?, 'running', ?, NULL, NULL, ?)
+                    input_hash, status, started_at, lease_expires_at,
+                    completed_at, error, abandoned_at, correlation_id
+                ) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, NULL, NULL, NULL, ?)
                 """,
                 (
                     normalized_run_id,
                     normalized_request_id,
+                    run_number,
                     normalized_pipeline,
                     normalized_input_hash,
                     _timestamp_to_db(started_at),
+                    _timestamp_to_db(lease_expires_at),
                     normalized_correlation,
                 ),
             )
             updated = connection.execute(
                 """
                 UPDATE reimbursements SET status = 'processing', version = version + 1
-                WHERE request_id = ? AND status = 'received' AND version = ?
+                WHERE request_id = ? AND status = ? AND version = ?
                 """,
-                (normalized_request_id, expected_version),
+                (normalized_request_id, state["status"], state["version"]),
             )
             if updated.rowcount != 1:
-                raise RequestConflictError("request changed while processing was started")
-            self._insert_audit_event(connection, audit_event)
-            new_version = expected_version + 1
+                raise RequestConflictError("request changed while the lease was claimed")
+            if resumed:
+                self._insert_audit_event(
+                    connection,
+                    AuditEvent(
+                        event_id=audit_event.event_id,
+                        request_id=normalized_request_id,
+                        event_type="reimbursement_processing_resumed",
+                        occurred_at=started_at,
+                        actor=AuditActor(
+                            actor_type="system",
+                            actor_id="processing-recovery",
+                        ),
+                        correlation_id=normalized_correlation,
+                        payload={
+                            "abandoned_at": _timestamp_to_db(started_at),
+                            "abandoned_processing_run_id": latest_run["processing_run_id"],
+                            "expired_lease_at": latest_run["lease_expires_at"],
+                            "from_status": ReimbursementStatus.PROCESSING.value,
+                            "pipeline_version": normalized_pipeline,
+                            "processing_run_id": normalized_run_id,
+                            "reason": "lease_expired",
+                            "request_version": state["version"],
+                            "result_version": state["version"] + 1,
+                            "run_number": run_number,
+                            "to_status": ReimbursementStatus.PROCESSING.value,
+                        },
+                    ),
+                )
+            else:
+                self._insert_audit_event(connection, audit_event)
+            result = self._read_request_result(connection, normalized_request_id)
+            if result is None:
+                raise RuntimeError("claimed reimbursement was not readable")
             connection.commit()
-            return new_version
+            return ProcessingLeaseClaim(
+                acquired=True,
+                result=result,
+                processing_run_id=normalized_run_id,
+                recovered=resumed,
+            )
         except (RequestConflictError, RequestNotFoundError):
             connection.rollback()
             raise
@@ -1534,7 +1760,7 @@ class SqliteReviewRepository:
             run_update = connection.execute(
                 """
                 UPDATE processing_runs
-                SET status = 'completed', completed_at = ?
+                SET status = 'completed', lease_expires_at = NULL, completed_at = ?
                 WHERE processing_run_id = ? AND status = 'running'
                 """,
                 (_timestamp_to_db(completed_at), normalized_run_id),
@@ -2313,6 +2539,114 @@ class SqliteReviewRepository:
             ),
         )
 
+    @classmethod
+    def _abandon_expired_run(
+        cls,
+        connection: sqlite3.Connection,
+        *,
+        run: sqlite3.Row,
+        abandoned_at: datetime,
+        next_processing_run_id: str,
+        audit_event: AuditEvent,
+    ) -> None:
+        """Terminalize an expired run and any still-running attempts atomically."""
+
+        abandoned_at_db = _timestamp_to_db(abandoned_at)
+        running_attempts = connection.execute(
+            """
+            SELECT invocation_id, stage, attempt, invoked_at
+            FROM processing_invocation_attempts
+            WHERE processing_run_id = ? AND status = 'running'
+            ORDER BY stage, attempt, invocation_id
+            """,
+            (run["processing_run_id"],),
+        ).fetchall()
+        recovery_actor = AuditActor(actor_type="system", actor_id="processing-recovery")
+        for invocation in running_attempts:
+            invoked_at = _timestamp_from_db(invocation["invoked_at"])
+            duration_ms = max(
+                0,
+                int((abandoned_at - invoked_at).total_seconds() * 1000),
+            )
+            updated = connection.execute(
+                """
+                UPDATE processing_invocation_attempts
+                SET status = 'failed', output_hash = ?, raw_response = '', error = ?,
+                    abandoned_at = ?, completed_at = ?, duration_ms = ?
+                WHERE invocation_id = ? AND status = 'running'
+                """,
+                (
+                    _EMPTY_OUTPUT_HASH,
+                    _ABANDONED_INVOCATION_ERROR,
+                    abandoned_at_db,
+                    abandoned_at_db,
+                    duration_ms,
+                    invocation["invocation_id"],
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RequestConflictError("invocation changed during lease recovery")
+            cls._insert_audit_event(
+                connection,
+                AuditEvent(
+                    event_id=_recovery_event_id(
+                        audit_event.event_id,
+                        f"invocation:{invocation['invocation_id']}",
+                    ),
+                    request_id=run["request_id"],
+                    event_type="model_invocation_abandoned",
+                    occurred_at=abandoned_at,
+                    actor=recovery_actor,
+                    correlation_id=audit_event.correlation_id,
+                    payload={
+                        "abandoned_at": abandoned_at_db,
+                        "attempt": invocation["attempt"],
+                        "invocation_id": invocation["invocation_id"],
+                        "processing_run_id": run["processing_run_id"],
+                        "reason": "lease_expired",
+                        "stage": invocation["stage"],
+                    },
+                ),
+                event_scope="technical",
+            )
+
+        run_update = connection.execute(
+            """
+            UPDATE processing_runs
+            SET status = 'failed', lease_expires_at = NULL, completed_at = ?,
+                error = ?, abandoned_at = ?
+            WHERE processing_run_id = ? AND status = 'running'
+            """,
+            (
+                abandoned_at_db,
+                _ABANDONED_RUN_ERROR,
+                abandoned_at_db,
+                run["processing_run_id"],
+            ),
+        )
+        if run_update.rowcount != 1:
+            raise RequestConflictError("processing run changed during lease recovery")
+        cls._insert_audit_event(
+            connection,
+            AuditEvent(
+                event_id=_recovery_event_id(audit_event.event_id, "processing_run"),
+                request_id=run["request_id"],
+                event_type="processing_run_abandoned",
+                occurred_at=abandoned_at,
+                actor=recovery_actor,
+                correlation_id=audit_event.correlation_id,
+                payload={
+                    "abandoned_at": abandoned_at_db,
+                    "expired_lease_at": run["lease_expires_at"],
+                    "next_processing_run_id": next_processing_run_id,
+                    "processing_run_id": run["processing_run_id"],
+                    "reason": "lease_expired",
+                    "run_number": run["run_number"],
+                },
+            ),
+            event_scope="technical",
+        )
+
     @staticmethod
     def _insert_terminal_invocation(
         connection: sqlite3.Connection,
@@ -2664,7 +2998,8 @@ class SqliteReviewRepository:
             """
             SELECT
                 processing_run_id, run_number, status, pipeline_version,
-                input_hash, started_at, completed_at, error
+                input_hash, started_at, lease_expires_at, completed_at, error,
+                abandoned_at
             FROM processing_runs WHERE request_id = ?
             ORDER BY run_number DESC LIMIT 1
             """,
@@ -2685,6 +3020,16 @@ class SqliteReviewRepository:
                     else None
                 ),
                 error=run_row["error"],
+                lease_expires_at=(
+                    _timestamp_from_db(run_row["lease_expires_at"])
+                    if run_row["lease_expires_at"] is not None
+                    else None
+                ),
+                abandoned_at=(
+                    _timestamp_from_db(run_row["abandoned_at"])
+                    if run_row["abandoned_at"] is not None
+                    else None
+                ),
             )
 
         extraction_result = cls._read_extraction(connection, request_id)
@@ -2696,7 +3041,8 @@ class SqliteReviewRepository:
                     pi.invocation_id, pi.processing_run_id, pi.stage, pi.attempt,
                     pi.status, pi.provider, pi.model, pi.prompt_version,
                     pi.prompt_hash, pi.input_hash, pi.output_hash, pi.invoked_at,
-                    pi.completed_at, pi.duration_ms, pi.parameters_json, pi.error
+                    pi.completed_at, pi.duration_ms, pi.parameters_json, pi.error,
+                    pi.abandoned_at
                 FROM processing_invocation_attempts AS pi
                 JOIN extractions AS e ON e.source_invocation_id = pi.invocation_id
                 WHERE e.request_id = ?
@@ -2726,6 +3072,11 @@ class SqliteReviewRepository:
                 duration_ms=invocation_row["duration_ms"],
                 parameters=_object_from_json(invocation_row["parameters_json"]),
                 error=invocation_row["error"],
+                abandoned_at=(
+                    _timestamp_from_db(invocation_row["abandoned_at"])
+                    if invocation_row["abandoned_at"] is not None
+                    else None
+                ),
             )
             extraction_snapshot = ExtractionSnapshot(
                 status=extraction_result.status,
@@ -2907,6 +3258,11 @@ def _event_query_fingerprint(request_id: str, query: ReviewEventQuery) -> str:
         "sort": "occurred_at_asc",
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _recovery_event_id(base_event_id: str, component: str) -> str:
+    material = f"expense-agent:recovery:v1\0{base_event_id}\0{component}"
+    return f"recovery:{hashlib.sha256(material.encode('utf-8')).hexdigest()}"
 
 
 def _canonical_json(value: Any) -> str:

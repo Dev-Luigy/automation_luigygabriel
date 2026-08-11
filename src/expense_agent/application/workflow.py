@@ -6,7 +6,7 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
@@ -63,6 +63,8 @@ class ProcessingRunSummary:
     started_at: datetime
     completed_at: datetime | None = None
     error: str | None = None
+    lease_expires_at: datetime | None = None
+    abandoned_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("processing_run_id", "pipeline_version", "input_hash"):
@@ -80,8 +82,17 @@ class ProcessingRunSummary:
         require_aware_datetime(self.started_at, "started_at")
         if self.completed_at is not None:
             require_aware_datetime(self.completed_at, "completed_at")
+        if self.lease_expires_at is not None:
+            require_aware_datetime(self.lease_expires_at, "lease_expires_at")
+        if self.abandoned_at is not None:
+            require_aware_datetime(self.abandoned_at, "abandoned_at")
         if self.status is ProcessingRunStatus.RUNNING:
-            if self.completed_at is not None or self.error is not None:
+            if (
+                self.completed_at is not None
+                or self.error is not None
+                or self.abandoned_at is not None
+                or self.lease_expires_at is None
+            ):
                 raise DomainValidationError("a running processing run cannot be completed")
         elif self.completed_at is None:
             raise DomainValidationError("a terminal processing run requires completed_at")
@@ -89,6 +100,10 @@ class ProcessingRunSummary:
             object.__setattr__(self, "error", require_non_blank(self.error or "", "error"))
         elif self.error is not None:
             raise DomainValidationError("only a failed processing run may contain an error")
+        if self.status is not ProcessingRunStatus.RUNNING and self.lease_expires_at is not None:
+            raise DomainValidationError("a terminal processing run cannot retain a lease")
+        if self.abandoned_at is not None and self.status is not ProcessingRunStatus.FAILED:
+            raise DomainValidationError("only a failed processing run may be abandoned")
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +126,7 @@ class InvocationSummary:
     completed_at: datetime | None = None
     duration_ms: int | None = None
     error: str | None = None
+    abandoned_at: datetime | None = None
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -135,6 +151,8 @@ class InvocationSummary:
         require_aware_datetime(self.invoked_at, "invoked_at")
         if self.completed_at is not None:
             require_aware_datetime(self.completed_at, "completed_at")
+        if self.abandoned_at is not None:
+            require_aware_datetime(self.abandoned_at, "abandoned_at")
         if self.duration_ms is not None and (
             not isinstance(self.duration_ms, int)
             or isinstance(self.duration_ms, bool)
@@ -144,7 +162,13 @@ class InvocationSummary:
         if self.status is InvocationStatus.RUNNING:
             if any(
                 value is not None
-                for value in (self.output_hash, self.completed_at, self.duration_ms, self.error)
+                for value in (
+                    self.output_hash,
+                    self.completed_at,
+                    self.duration_ms,
+                    self.error,
+                    self.abandoned_at,
+                )
             ):
                 raise DomainValidationError("a running invocation cannot contain a result")
         else:
@@ -159,6 +183,8 @@ class InvocationSummary:
                 object.__setattr__(self, "error", require_non_blank(self.error or "", "error"))
             elif self.error is not None:
                 raise DomainValidationError("a successful invocation cannot contain an error")
+        if self.abandoned_at is not None and self.status is not InvocationStatus.FAILED:
+            raise DomainValidationError("only a failed invocation may be abandoned")
         object.__setattr__(self, "parameters", MappingProxyType(dict(self.parameters)))
 
 
@@ -245,16 +271,57 @@ class RequestResult:
 class ProcessingOutcome:
     created: bool
     result: RequestResult
+    recovered: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.created, bool):
             raise DomainValidationError("created must be a boolean")
+        if not isinstance(self.recovered, bool):
+            raise DomainValidationError("recovered must be a boolean")
+        if self.created and self.recovered:
+            raise DomainValidationError("an outcome cannot be both created and recovered")
         if not isinstance(self.result, RequestResult):
             raise DomainValidationError("result must be a RequestResult")
 
     @property
     def replayed(self) -> bool:
-        return not self.created
+        return not self.created and not self.recovered
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessingLeaseClaim:
+    """Atomic ownership result for initial processing or an expired-run recovery."""
+
+    acquired: bool
+    result: RequestResult
+    processing_run_id: str | None
+    recovered: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.acquired, bool):
+            raise DomainValidationError("acquired must be a boolean")
+        if not isinstance(self.recovered, bool):
+            raise DomainValidationError("recovered must be a boolean")
+        if self.recovered and not self.acquired:
+            raise DomainValidationError("only an acquired lease may be recovered")
+        if not isinstance(self.result, RequestResult):
+            raise DomainValidationError("result must be a RequestResult")
+        if self.processing_run_id is not None:
+            object.__setattr__(
+                self,
+                "processing_run_id",
+                require_non_blank(self.processing_run_id, "processing_run_id"),
+            )
+        if self.acquired:
+            if self.processing_run_id is None:
+                raise DomainValidationError("an acquired lease requires processing_run_id")
+            if (
+                self.result.status is not ReimbursementStatus.PROCESSING
+                or self.result.processing_run is None
+                or self.result.processing_run.status is not ProcessingRunStatus.RUNNING
+                or self.result.processing_run.processing_run_id != self.processing_run_id
+            ):
+                raise DomainValidationError("an acquired lease requires the matching running result")
 
 
 class WorkflowRepository(Protocol):
@@ -267,7 +334,7 @@ class WorkflowRepository(Protocol):
         audit_event: AuditEvent,
     ) -> tuple[bool, RequestResult]: ...
 
-    def start_processing(
+    def claim_processing(
         self,
         *,
         request_id: str,
@@ -276,9 +343,10 @@ class WorkflowRepository(Protocol):
         input_hash: str,
         expected_version: int,
         started_at: datetime,
+        lease_expires_at: datetime,
         correlation_id: str,
         audit_event: AuditEvent,
-    ) -> int: ...
+    ) -> ProcessingLeaseClaim: ...
 
     def begin_invocation(
         self,
@@ -341,6 +409,7 @@ class ProcessingService:
         invocation_id_factory: Callable[[], str] | None = None,
         decision_id_factory: Callable[[], str] | None = None,
         event_id_factory: Callable[[], str] | None = None,
+        processing_lease: timedelta = timedelta(minutes=5),
     ) -> None:
         self._repository = repository
         self._extractor = extractor
@@ -350,6 +419,9 @@ class ProcessingService:
         self._invocation_id_factory = invocation_id_factory or (lambda: uuid4().hex)
         self._decision_id_factory = decision_id_factory or (lambda: uuid4().hex)
         self._event_id_factory = event_id_factory or (lambda: uuid4().hex)
+        if not isinstance(processing_lease, timedelta) or processing_lease <= timedelta(0):
+            raise DomainValidationError("processing_lease must be a positive timedelta")
+        self._processing_lease = processing_lease
 
     def process(
         self,
@@ -384,21 +456,25 @@ class ProcessingService:
                 },
             ),
         )
-        if not created:
+        if not created and registered.status not in {
+            ReimbursementStatus.RECEIVED,
+            ReimbursementStatus.PROCESSING,
+        }:
             return ProcessingOutcome(created=False, result=registered)
 
-        processing_run_id = require_non_blank(
+        proposed_processing_run_id = require_non_blank(
             self._run_id_factory(), "processing_run_id"
         )
         input_hash = _sha256_text(submission.raw_ocr_text)
         started_at = self._now()
-        processing_version = self._repository.start_processing(
+        claim = self._repository.claim_processing(
             request_id=submission.request_id,
-            processing_run_id=processing_run_id,
+            processing_run_id=proposed_processing_run_id,
             pipeline_version=self._policy.policy_version,
             input_hash=input_hash,
             expected_version=registered.version,
             started_at=started_at,
+            lease_expires_at=started_at + self._processing_lease,
             correlation_id=normalized_correlation_id,
             audit_event=AuditEvent(
                 event_id=self._event_id_factory(),
@@ -408,15 +484,22 @@ class ProcessingService:
                 actor=AuditActor(actor_type="system", actor_id="processing-orchestrator"),
                 correlation_id=normalized_correlation_id,
                 payload={
-                    "from_status": ReimbursementStatus.RECEIVED.value,
+                    "from_status": registered.status.value,
                     "pipeline_version": self._policy.policy_version,
-                    "processing_run_id": processing_run_id,
+                    "processing_run_id": proposed_processing_run_id,
                     "request_version": registered.version,
                     "result_version": registered.version + 1,
                     "to_status": ReimbursementStatus.PROCESSING.value,
                 },
             ),
         )
+        if not claim.acquired:
+            return ProcessingOutcome(created=False, result=claim.result)
+        processing_run_id = claim.processing_run_id
+        if processing_run_id is None:  # Defensive; ProcessingLeaseClaim enforces this.
+            raise RuntimeError("acquired processing lease has no run ID")
+        processing_version = claim.result.version
+        opened_at = claim.result.opened_at
 
         invocation_id = require_non_blank(
             self._invocation_id_factory(), "invocation_id"
@@ -594,7 +677,11 @@ class ProcessingService:
             decision_event=decision_event,
             review_event=review_event,
         )
-        return ProcessingOutcome(created=True, result=result)
+        return ProcessingOutcome(
+            created=created,
+            recovered=claim.recovered,
+            result=result,
+        )
 
     def get_result(self, request_id: str) -> RequestResult:
         normalized_request_id = require_non_blank(request_id, "request_id")
@@ -691,6 +778,7 @@ __all__ = [
     "ExtractionSnapshot",
     "InvocationStatus",
     "InvocationSummary",
+    "ProcessingLeaseClaim",
     "ProcessingOutcome",
     "ProcessingRunStatus",
     "ProcessingRunSummary",

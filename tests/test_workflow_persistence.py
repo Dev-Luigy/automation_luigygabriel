@@ -1,7 +1,9 @@
 import hashlib
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from threading import Barrier
 
 import pytest
 
@@ -40,10 +42,18 @@ class StubExtractor:
     prompt_version = "test-prompt-v1"
     prompt_hash = "prompt-sha256"
 
-    def __init__(self, *, receipt_date: date, total: str, category: str = "meals") -> None:
+    def __init__(
+        self,
+        *,
+        receipt_date: date,
+        total: str,
+        category: str = "meals",
+        invoked_at: datetime = NOW,
+    ) -> None:
         self.receipt_date = receipt_date
         self.total = total
         self.category = category
+        self.invoked_at = invoked_at
         self.calls = 0
 
     def extract(self, submission: ReimbursementSubmission) -> ExtractionResult:
@@ -61,7 +71,7 @@ class StubExtractor:
                     submission.raw_ocr_text.encode("utf-8")
                 ).hexdigest(),
                 raw_response=raw_response,
-                invoked_at=NOW,
+                invoked_at=self.invoked_at,
                 duration_ms=17,
                 parameters={"temperature": 0},
             ),
@@ -78,6 +88,51 @@ class RaisingExtractor(StubExtractor):
     def extract(self, submission: ReimbursementSubmission) -> ExtractionResult:
         self.calls += 1
         raise TimeoutError("secret provider detail")
+
+
+class CrashAfterBeginRepository:
+    """Fault injector that crashes only after the running attempt is durable."""
+
+    def __init__(self, repository: SqliteReviewRepository) -> None:
+        self.repository = repository
+
+    def __getattr__(self, name: str):
+        return getattr(self.repository, name)
+
+    def begin_invocation(self, invocation, *, audit_event) -> None:
+        self.repository.begin_invocation(invocation, audit_event=audit_event)
+        raise RuntimeError("simulated worker crash after invocation start")
+
+
+class CrashAfterFinishRepository:
+    """Fault injector that crashes after provider output is terminal and durable."""
+
+    def __init__(self, repository: SqliteReviewRepository) -> None:
+        self.repository = repository
+
+    def __getattr__(self, name: str):
+        return getattr(self.repository, name)
+
+    def finish_invocation(self, invocation, *, raw_response, audit_event) -> None:
+        self.repository.finish_invocation(
+            invocation,
+            raw_response=raw_response,
+            audit_event=audit_event,
+        )
+        raise RuntimeError("simulated worker crash after invocation completion")
+
+
+class BarrierClaimRepository:
+    def __init__(self, repository: SqliteReviewRepository, barrier: Barrier) -> None:
+        self.repository = repository
+        self.barrier = barrier
+
+    def __getattr__(self, name: str):
+        return getattr(self.repository, name)
+
+    def claim_processing(self, **kwargs):
+        self.barrier.wait(timeout=5)
+        return self.repository.claim_processing(**kwargs)
 
 
 def _submission(
@@ -110,6 +165,28 @@ def _service(
         decision_id_factory=lambda: "DECISION-1",
         event_id_factory=lambda: next(event_ids),
     )
+
+
+def _strand_running_attempt(database_path) -> ReimbursementSubmission:
+    repository = SqliteReviewRepository(database_path)
+    submission = _submission("REQ-LEASE-RECOVERY")
+    service = ProcessingService(
+        CrashAfterBeginRepository(repository),  # type: ignore[arg-type]
+        StubExtractor(receipt_date=date(2026, 4, 10), total="100.00"),
+        clock=lambda: NOW,
+        run_id_factory=lambda: "RUN-STRANDED",
+        invocation_id_factory=lambda: "INVOCATION-STRANDED",
+        decision_id_factory=lambda: "DECISION-UNUSED",
+        event_id_factory=iter(f"STRAND-EVENT-{index}" for index in range(20)).__next__,
+        processing_lease=timedelta(minutes=5),
+    )
+    with pytest.raises(RuntimeError, match="simulated worker crash"):
+        service.process(
+            submission,
+            actor=AuditActor("submitter", "user-42"),
+            correlation_id="corr-stranded",
+        )
+    return submission
 
 
 @pytest.mark.parametrize(
@@ -330,6 +407,387 @@ def test_late_finalization_audit_failure_rolls_back_financial_outcome(tmp_path) 
         assert connection.execute("SELECT COUNT(*) FROM review_cases").fetchone()[0] == 0
 
 
+def test_active_lease_replays_without_extraction_then_expired_lease_recovers_after_restart(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "lease-restart.db"
+    submission = _strand_running_attempt(database_path)
+
+    active_time = NOW + timedelta(minutes=4)
+    active_extractor = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=active_time,
+    )
+    active_service = ProcessingService(
+        SqliteReviewRepository(database_path),
+        active_extractor,
+        clock=lambda: active_time,
+        run_id_factory=lambda: "RUN-NOT-ACQUIRED",
+        invocation_id_factory=lambda: "INVOCATION-NOT-STARTED",
+        decision_id_factory=lambda: "DECISION-NOT-CREATED",
+        event_id_factory=iter(f"ACTIVE-EVENT-{index}" for index in range(20)).__next__,
+        processing_lease=timedelta(minutes=5),
+    )
+
+    active = active_service.process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-active-replay",
+    )
+
+    assert active.created is False
+    assert active.recovered is False
+    assert active.replayed is True
+    assert active.result.status is ReimbursementStatus.PROCESSING
+    assert active.result.version == 2
+    assert active_extractor.calls == 0
+
+    recovery_time = NOW + timedelta(minutes=6)
+    recovery_extractor = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=recovery_time,
+    )
+    recovered_repository = SqliteReviewRepository(database_path)
+    recovered_service = ProcessingService(
+        recovered_repository,
+        recovery_extractor,
+        clock=lambda: recovery_time,
+        run_id_factory=lambda: "RUN-RECOVERED",
+        invocation_id_factory=lambda: "INVOCATION-RECOVERED",
+        decision_id_factory=lambda: "DECISION-RECOVERED",
+        event_id_factory=iter(f"RECOVERY-EVENT-{index}" for index in range(30)).__next__,
+        processing_lease=timedelta(minutes=5),
+    )
+
+    recovered = recovered_service.process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-recovered",
+    )
+
+    assert recovered.created is False
+    assert recovered.recovered is True
+    assert recovered.replayed is False
+    assert recovered.result.status is ReimbursementStatus.AUTO_APPROVED
+    assert recovered.result.version == 4
+    assert recovery_extractor.calls == 1
+
+    terminal_replay = recovered_service.process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-terminal-replay",
+    )
+    assert terminal_replay.created is False
+    assert terminal_replay.recovered is False
+    assert terminal_replay.replayed is True
+    assert terminal_replay.result.version == 4
+    assert recovery_extractor.calls == 1
+
+    with sqlite3.connect(database_path) as connection:
+        runs = connection.execute(
+            """
+            SELECT processing_run_id, run_number, status, lease_expires_at,
+                   abandoned_at, error
+            FROM processing_runs ORDER BY run_number
+            """
+        ).fetchall()
+        attempts = connection.execute(
+            """
+            SELECT invocation_id, status, abandoned_at, raw_response, error
+            FROM processing_invocation_attempts ORDER BY invoked_at, invocation_id
+            """
+        ).fetchall()
+        decisions = connection.execute(
+            "SELECT decision_id, processing_run_id FROM automated_decisions"
+        ).fetchall()
+        technical_events = connection.execute(
+            """
+            SELECT event_type, payload_json FROM audit_events
+            WHERE event_scope = 'technical' ORDER BY occurred_at, event_id
+            """
+        ).fetchall()
+    assert runs[0][0:4] == ("RUN-STRANDED", 1, "failed", None)
+    assert runs[0][4] is not None
+    assert runs[0][5] == "processing lease expired; run abandoned"
+    assert runs[1][0:5] == ("RUN-RECOVERED", 2, "completed", None, None)
+    assert attempts[0][0:2] == ("INVOCATION-STRANDED", "failed")
+    assert attempts[0][2] is not None
+    assert attempts[0][3] == ""
+    assert "expired" in attempts[0][4]
+    assert attempts[1][0:3] == ("INVOCATION-RECOVERED", "succeeded", None)
+    assert decisions == [("DECISION-RECOVERED", "RUN-RECOVERED")]
+    assert {event_type for event_type, _payload in technical_events} >= {
+        "model_invocation_abandoned",
+        "processing_run_abandoned",
+    }
+    assert "secret" not in repr(technical_events).lower()
+
+    timeline = ReviewService(recovered_repository).list_events(
+        submission.request_id,
+        ReviewEventQuery(page_size=100),
+    )
+    assert [event.event_type for event in timeline.items] == [
+        "reimbursement_received",
+        "reimbursement_processing_started",
+        "reimbursement_processing_resumed",
+        "automated_decision_recorded",
+    ]
+    resumed_event = timeline.items[2]
+    assert resumed_event.payload["abandoned_processing_run_id"] == "RUN-STRANDED"
+    assert resumed_event.payload["processing_run_id"] == "RUN-RECOVERED"
+    assert resumed_event.payload["reason"] == "lease_expired"
+
+
+def test_concurrent_expired_lease_replays_grant_one_recovery_owner(tmp_path) -> None:
+    database_path = tmp_path / "lease-concurrency.db"
+    submission = _strand_running_attempt(database_path)
+    recovery_time = NOW + timedelta(minutes=6)
+    barrier = Barrier(2)
+    extractors = [
+        StubExtractor(
+            receipt_date=date(2026, 4, 10),
+            total="100.00",
+            invoked_at=recovery_time,
+        )
+        for _index in range(2)
+    ]
+    services = []
+    for index, extractor in enumerate(extractors, start=1):
+        event_ids = iter(
+            [f"CONCURRENT-{index}-EVENT-{event}" for event in range(30)]
+        )
+        repository = BarrierClaimRepository(
+            SqliteReviewRepository(database_path),
+            barrier,
+        )
+        services.append(
+            ProcessingService(
+                repository,  # type: ignore[arg-type]
+                extractor,
+                clock=lambda: recovery_time,
+                run_id_factory=lambda index=index: f"RUN-CONCURRENT-{index}",
+                invocation_id_factory=lambda index=index: f"INV-CONCURRENT-{index}",
+                decision_id_factory=lambda index=index: f"DEC-CONCURRENT-{index}",
+                event_id_factory=event_ids.__next__,
+                processing_lease=timedelta(minutes=5),
+            )
+        )
+
+    def recover(service: ProcessingService):
+        return service.process(
+            submission,
+            actor=AuditActor("submitter", "user-42"),
+            correlation_id=f"corr-{id(service)}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = tuple(executor.map(recover, services))
+
+    assert sum(extractor.calls for extractor in extractors) == 1
+    assert sum(outcome.recovered for outcome in outcomes) == 1
+    assert all(outcome.created is False for outcome in outcomes)
+    assert {outcome.result.status for outcome in outcomes} <= {
+        ReimbursementStatus.PROCESSING,
+        ReimbursementStatus.AUTO_APPROVED,
+    }
+    assert sum(
+        outcome.result.status is ReimbursementStatus.AUTO_APPROVED
+        for outcome in outcomes
+    ) >= 1
+
+    with sqlite3.connect(database_path) as connection:
+        runs = connection.execute(
+            """
+            SELECT run_number, status, abandoned_at FROM processing_runs
+            ORDER BY run_number
+            """
+        ).fetchall()
+        counts = connection.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM automated_decisions),
+                (SELECT COUNT(*) FROM extractions),
+                (SELECT COUNT(*) FROM audit_events
+                    WHERE event_type = 'reimbursement_processing_resumed'),
+                (SELECT COUNT(*) FROM processing_runs WHERE status = 'running')
+            """
+        ).fetchone()
+    assert runs[0][0:2] == (1, "failed")
+    assert runs[0][2] is not None
+    assert runs[1] == (2, "completed", None)
+    assert counts == (1, 1, 1, 0)
+
+
+def test_recovery_audit_failure_rolls_back_abandonment_and_new_lease(tmp_path) -> None:
+    database_path = tmp_path / "lease-recovery-rollback.db"
+    submission = _strand_running_attempt(database_path)
+    recovery_time = NOW + timedelta(minutes=6)
+    extractor = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=recovery_time,
+    )
+    service = ProcessingService(
+        SqliteReviewRepository(database_path),
+        extractor,
+        clock=lambda: recovery_time,
+        run_id_factory=lambda: "RUN-ROLLBACK-NEW",
+        invocation_id_factory=lambda: "INV-ROLLBACK-NEW",
+        decision_id_factory=lambda: "DEC-ROLLBACK-NEW",
+        event_id_factory=iter(
+            (
+                "RECOVERY-ROLLBACK-REPLAY",
+                "STRAND-EVENT-0",  # Existing business event; resume insert must fail.
+            )
+        ).__next__,
+        processing_lease=timedelta(minutes=5),
+    )
+
+    with pytest.raises(RequestConflictError, match="processing start conflicts"):
+        service.process(
+            submission,
+            actor=AuditActor("submitter", "user-42"),
+            correlation_id="corr-recovery-rollback",
+        )
+
+    assert extractor.calls == 0
+    with sqlite3.connect(database_path) as connection:
+        reimbursement = connection.execute(
+            "SELECT status, version FROM reimbursements"
+        ).fetchone()
+        runs = connection.execute(
+            """
+            SELECT processing_run_id, status, abandoned_at FROM processing_runs
+            ORDER BY run_number
+            """
+        ).fetchall()
+        attempts = connection.execute(
+            """
+            SELECT invocation_id, status, abandoned_at
+            FROM processing_invocation_attempts
+            """
+        ).fetchall()
+        recovery_events = connection.execute(
+            """
+            SELECT COUNT(*) FROM audit_events
+            WHERE event_type IN (
+                'model_invocation_abandoned',
+                'processing_run_abandoned',
+                'reimbursement_processing_resumed'
+            )
+            """
+        ).fetchone()[0]
+    assert reimbursement == ("processing", 2)
+    assert runs == [("RUN-STRANDED", "running", None)]
+    assert attempts == [("INVOCATION-STRANDED", "running", None)]
+    assert recovery_events == 0
+
+
+def test_finished_invocation_is_preserved_and_old_worker_cannot_finalize_after_takeover(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "finished-invocation-recovery.db"
+    repository = SqliteReviewRepository(database_path)
+    submission = _submission("REQ-FINISHED-RECOVERY")
+    old_extractor = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=NOW,
+    )
+    old_service = ProcessingService(
+        CrashAfterFinishRepository(repository),  # type: ignore[arg-type]
+        old_extractor,
+        clock=lambda: NOW,
+        run_id_factory=lambda: "RUN-FINISHED-OLD",
+        invocation_id_factory=lambda: "INV-FINISHED-OLD",
+        decision_id_factory=lambda: "DEC-OLD-UNUSED",
+        event_id_factory=iter(f"FINISHED-OLD-EVENT-{i}" for i in range(20)).__next__,
+        processing_lease=timedelta(minutes=5),
+    )
+    with pytest.raises(RuntimeError, match="after invocation completion"):
+        old_service.process(
+            submission,
+            actor=AuditActor("submitter", "user-42"),
+            correlation_id="corr-finished-old",
+        )
+
+    recovery_time = NOW + timedelta(minutes=6)
+    new_extractor = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=recovery_time,
+    )
+    restarted = SqliteReviewRepository(database_path)
+    recovered = ProcessingService(
+        restarted,
+        new_extractor,
+        clock=lambda: recovery_time,
+        run_id_factory=lambda: "RUN-FINISHED-NEW",
+        invocation_id_factory=lambda: "INV-FINISHED-NEW",
+        decision_id_factory=lambda: "DEC-FINISHED-NEW",
+        event_id_factory=iter(f"FINISHED-NEW-EVENT-{i}" for i in range(30)).__next__,
+        processing_lease=timedelta(minutes=5),
+    ).process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-finished-new",
+    )
+
+    assert recovered.recovered is True
+    assert recovered.result.status is ReimbursementStatus.AUTO_APPROVED
+    assert recovered.result.automated_decision is not None
+
+    old_extraction = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=NOW,
+    ).extract(submission)
+    with pytest.raises(RequestConflictError, match="no longer processing"):
+        restarted.complete_processing(
+            request_id=submission.request_id,
+            processing_run_id="RUN-FINISHED-OLD",
+            extraction=old_extraction,
+            source_invocation_id="INV-FINISHED-OLD",
+            automated_decision=recovered.result.automated_decision,
+            problems=(),
+            expected_version=2,
+            resulting_status=ReimbursementStatus.AUTO_APPROVED,
+            completed_at=recovery_time,
+            decision_event=_event(
+                "OLD-WORKER-DECISION-EVENT",
+                submission.request_id,
+                "automated_decision_recorded",
+                AuditActor("system", "deterministic-policy-engine"),
+            ),
+            review_event=None,
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        attempts = connection.execute(
+            """
+            SELECT invocation_id, status, abandoned_at
+            FROM processing_invocation_attempts ORDER BY invoked_at, invocation_id
+            """
+        ).fetchall()
+        old_run = connection.execute(
+            """
+            SELECT status, abandoned_at FROM processing_runs
+            WHERE processing_run_id = 'RUN-FINISHED-OLD'
+            """
+        ).fetchone()
+        decision_count = connection.execute(
+            "SELECT COUNT(*) FROM automated_decisions"
+        ).fetchone()[0]
+    assert attempts == [
+        ("INV-FINISHED-OLD", "succeeded", None),
+        ("INV-FINISHED-NEW", "succeeded", None),
+    ]
+    assert old_run is not None and old_run[0] == "failed" and old_run[1] is not None
+    assert decision_count == 1
+
+
 def test_claimed_minor_units_cannot_diverge_from_the_immutable_submission(tmp_path) -> None:
     database_path = tmp_path / "immutable-minor-units.db"
     repository = SqliteReviewRepository(database_path)
@@ -421,6 +879,152 @@ def test_existing_database_receives_versioned_minor_unit_immutability_trigger(tm
             )
 
 
+def test_pre_lease_running_database_is_migrated_with_a_bounded_active_lease(
+    tmp_path,
+) -> None:
+    database_path = tmp_path / "pre-lease-running.db"
+    repository = SqliteReviewRepository(database_path)
+    submission = _submission("REQ-PRE-LEASE")
+    repository.register_received(
+        submission,
+        submission_hash=submission_fingerprint(submission),
+        opened_at=NOW,
+        audit_event=_event(
+            "PRE-LEASE-RECEIVED",
+            submission.request_id,
+            "reimbursement_received",
+            AuditActor("submitter", "user-42"),
+        ),
+    )
+    input_hash = hashlib.sha256(submission.raw_ocr_text.encode("utf-8")).hexdigest()
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.executescript(
+            """
+            DROP TABLE processing_invocation_attempts;
+            DROP TABLE processing_runs;
+
+            CREATE TABLE processing_runs (
+                processing_run_id TEXT PRIMARY KEY,
+                request_id TEXT NOT NULL REFERENCES reimbursements(request_id),
+                run_number INTEGER NOT NULL CHECK (run_number >= 1),
+                pipeline_version TEXT NOT NULL,
+                input_hash TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error TEXT,
+                correlation_id TEXT NOT NULL,
+                UNIQUE (request_id, run_number),
+                UNIQUE (processing_run_id, request_id)
+            );
+
+            CREATE TABLE processing_invocation_attempts (
+                invocation_id TEXT PRIMARY KEY,
+                processing_run_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                attempt INTEGER NOT NULL CHECK (attempt >= 1),
+                status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_version TEXT NOT NULL,
+                prompt_hash TEXT NOT NULL,
+                input_hash TEXT NOT NULL,
+                output_hash TEXT,
+                raw_response TEXT,
+                error TEXT,
+                invoked_at TEXT NOT NULL,
+                completed_at TEXT,
+                duration_ms INTEGER,
+                parameters_json TEXT NOT NULL,
+                UNIQUE (processing_run_id, stage, attempt),
+                FOREIGN KEY (processing_run_id, request_id)
+                    REFERENCES processing_runs(processing_run_id, request_id)
+            );
+            """
+        )
+        connection.execute(
+            """
+            UPDATE reimbursements SET status = 'processing', version = 2
+            WHERE request_id = ?
+            """,
+            (submission.request_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO processing_runs (
+                processing_run_id, request_id, run_number, pipeline_version,
+                input_hash, status, started_at, completed_at, error, correlation_id
+            ) VALUES (?, ?, 1, 'baseline-v1', ?, 'running', ?, NULL, NULL, 'legacy-corr')
+            """,
+            ("RUN-PRE-LEASE", submission.request_id, input_hash, NOW.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO processing_invocation_attempts (
+                invocation_id, processing_run_id, request_id, stage, attempt,
+                status, provider, model, prompt_version, prompt_hash, input_hash,
+                output_hash, raw_response, error, invoked_at, completed_at,
+                duration_ms, parameters_json
+            ) VALUES (
+                'INV-PRE-LEASE', 'RUN-PRE-LEASE', ?, 'primary_extractor', 1,
+                'running', 'test-provider', 'test-model-v1', 'test-prompt-v1',
+                'prompt-sha256', ?, NULL, NULL, NULL, ?, NULL, NULL, '{}'
+            )
+            """,
+            (submission.request_id, input_hash, NOW.isoformat()),
+        )
+
+    migrated = SqliteReviewRepository(database_path)
+    active_time = NOW + timedelta(minutes=4)
+    extractor = StubExtractor(
+        receipt_date=date(2026, 4, 10),
+        total="100.00",
+        invoked_at=active_time,
+    )
+    replay = ProcessingService(
+        migrated,
+        extractor,
+        clock=lambda: active_time,
+        run_id_factory=lambda: "RUN-MIGRATION-NOT-ACQUIRED",
+        invocation_id_factory=lambda: "INV-MIGRATION-NOT-STARTED",
+        decision_id_factory=lambda: "DEC-MIGRATION-NOT-CREATED",
+        event_id_factory=iter(f"MIGRATION-EVENT-{i}" for i in range(20)).__next__,
+        processing_lease=timedelta(minutes=5),
+    ).process(
+        submission,
+        actor=AuditActor("submitter", "user-42"),
+        correlation_id="corr-migrated-active",
+    )
+
+    assert replay.replayed is True
+    assert replay.result.status is ReimbursementStatus.PROCESSING
+    assert extractor.calls == 0
+    with sqlite3.connect(database_path) as connection:
+        run_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(processing_runs)")
+        }
+        invocation_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(processing_invocation_attempts)"
+            )
+        }
+        lease = connection.execute(
+            """
+            SELECT lease_expires_at, abandoned_at FROM processing_runs
+            WHERE processing_run_id = 'RUN-PRE-LEASE'
+            """
+        ).fetchone()
+    assert {"lease_expires_at", "abandoned_at"} <= run_columns
+    assert "abandoned_at" in invocation_columns
+    assert lease is not None
+    assert datetime.fromisoformat(lease[0]) == NOW + timedelta(minutes=5)
+    assert lease[1] is None
+
+
 def test_legacy_workflow_backfill_rolls_back_as_one_transaction(tmp_path, monkeypatch) -> None:
     database_path = tmp_path / "legacy-backfill-rollback.db"
     with sqlite3.connect(database_path) as connection:
@@ -449,14 +1053,15 @@ def test_legacy_workflow_backfill_rolls_back_as_one_transaction(tmp_path, monkey
     def fail_after_partial_backfill(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
-            INSERT INTO processing_runs (
-                processing_run_id, request_id, run_number, pipeline_version,
-                input_hash, status, started_at, completed_at, error, correlation_id
-            ) VALUES (
-                'PARTIAL-RUN', 'LEGACY-ATOMIC', 1, 'legacy-test-v1',
-                'legacy-input-hash', 'running', '2026-04-10T12:00:00+00:00',
-                NULL, NULL, 'legacy:test'
-            )
+                INSERT INTO processing_runs (
+                    processing_run_id, request_id, run_number, pipeline_version,
+                    input_hash, status, started_at, lease_expires_at,
+                    completed_at, error, correlation_id
+                ) VALUES (
+                    'PARTIAL-RUN', 'LEGACY-ATOMIC', 1, 'legacy-test-v1',
+                    'legacy-input-hash', 'running', '2026-04-10T12:00:00+00:00',
+                    '2026-04-10T12:05:00+00:00', NULL, NULL, 'legacy:test'
+                )
             """
         )
         raise RuntimeError("injected legacy backfill failure")
