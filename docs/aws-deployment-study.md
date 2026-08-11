@@ -22,11 +22,11 @@ current assessment through a real AWS HTTPS URL:
 
 The script creates a minimal build context, validates SAM, builds the x86_64
 Python 3.12 Lambda ZIP in the AWS build container, deploys CloudFormation, and
-optionally submits the three public examples through HTTPS. The stack describes
-API Gateway HTTP API, one Mangum/FastAPI Lambda, two private subnets without NAT,
-encrypted EFS with two mount targets and an access point, 14-day logs, X-Ray,
-and error/throttle alarms. EFS backup is enabled and the filesystem is retained
-on stack deletion.
+optionally submits the three provided synthetic examples through HTTPS. The
+stack describes API Gateway HTTP API, one Mangum/FastAPI Lambda, two private
+subnets without NAT, encrypted EFS with two mount targets and an access point,
+14-day logs, X-Ray, and error/throttle alarms. EFS backup is enabled and the
+filesystem is retained on stack deletion.
 
 This is an **implemented and locally validated deployment artifact, not a
 provisioned stack**. No AWS credentials/account were available or used and no

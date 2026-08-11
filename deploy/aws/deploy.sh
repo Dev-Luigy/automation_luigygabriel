@@ -123,7 +123,7 @@ if [[ -z "${ea_api_url}" || "${ea_api_url}" == "None" ]]; then
 fi
 
 if [[ "${EA_SEED_DEMO:-true}" == "true" && -n "${ea_reviewer_password}" ]]; then
-    echo "Seeding the three public assignment samples through HTTPS..."
+    echo "Seeding the three provided synthetic assignment samples through HTTPS..."
     printf '%s\n' "${ea_reviewer_password}" |
         uv run --frozen python deploy/aws/seed_demo.py \
             --base-url "${ea_api_url}" \

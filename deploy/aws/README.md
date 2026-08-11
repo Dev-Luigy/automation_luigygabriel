@@ -50,7 +50,8 @@ Install and configure:
 2. [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
 3. [Docker](https://docs.docker.com/engine/install/) with its daemon running
 4. [uv](https://docs.astral.sh/uv/getting-started/installation/)
-5. OpenSSL
+5. Python 3.11 or newer, available as `python3`
+6. OpenSSL
 
 The selected AWS principal needs permission to create a CloudFormation stack,
 the generated IAM role, VPC/subnets/security groups, Lambda, API Gateway, EFS,
@@ -83,7 +84,8 @@ The script:
 5. validates the SAM template, builds a pinned x86_64 Lambda ZIP inside AWS's
    Python 3.12 build container, and deploys it;
 6. reads the HTTPS URL from CloudFormation;
-7. submits the three public assignment examples through the real HTTPS API;
+7. submits the three provided synthetic assignment examples through the real
+   HTTPS API;
 8. prints the `/reviews` URL and username.
 
 The plaintext password is not sent to CloudFormation and is unset before the

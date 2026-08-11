@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed the three public assignment samples through the deployed HTTPS API."""
+"""Seed the three provided synthetic assignment samples through the deployed HTTPS API."""
 
 from __future__ import annotations
 

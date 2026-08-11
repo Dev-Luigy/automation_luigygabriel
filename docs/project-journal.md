@@ -942,7 +942,8 @@ inside the assessment.
 prompts before billable resources, reads a password without echo, sends only its
 PBKDF2 hash to NoEcho CloudFormation parameters, generates the CSRF secret,
 prepares a minimal pinned build context, runs SAM lint/build/deploy, reads the
-stack URL, and seeds the three public assignment objects through the HTTPS API.
+stack URL, and seeds the three provided synthetic assignment objects through
+the HTTPS API.
 EFS is retained on stack deletion so cleanup cannot silently destroy the SQLite
 evidence; the runbook calls out continuing charges and manual authorization.
 

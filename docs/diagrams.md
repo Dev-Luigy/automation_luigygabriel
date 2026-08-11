@@ -336,8 +336,8 @@ The SAM template defines a new VPC, two private subnets, Lambda/EFS security
 groups, an encrypted backed-up EFS access point, a direct HTTPS API, bounded
 Lambda concurrency, least-privilege EFS access, log retention, and alarms. The
 script prompts before billable changes, derives only a PBKDF2 hash from the
-hidden password, generates a CSRF secret, seeds public fixtures, and prints the
-review URL.
+hidden password, generates a CSRF secret, seeds the provided synthetic fixtures,
+and prints the review URL.
 
 Local evidence proves the template and build path, not AWS operation: no account
 was mutated and there is no live endpoint, EFS recovery test, concurrency/load

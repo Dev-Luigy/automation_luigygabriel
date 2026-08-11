@@ -141,8 +141,8 @@ database and run `uv run expense-agent-seed-demo` before starting the service.
 ## Deploy the assessment sandbox on AWS
 
 The repository now contains a deliberately non-production, plug-and-play AWS
-deployment for reviewers who need a real HTTPS URL. After installing AWS CLI,
-SAM CLI, Docker, uv, and OpenSSL, run:
+deployment for reviewers who need a real HTTPS URL. After installing Python
+3.11+, AWS CLI, SAM CLI, Docker, uv, and OpenSSL, run:
 
 ```bash
 ./deploy/aws/deploy.sh
@@ -151,8 +151,8 @@ SAM CLI, Docker, uv, and OpenSSL, run:
 The script validates and builds the Lambda artifact in the AWS Python 3.12
 x86_64 build container, deploys API Gateway/Lambda/VPC/EFS through
 CloudFormation, prompts for a reviewer password without echoing it, and seeds
-the three public assignment requests through HTTPS. It does not require an
-existing RecargaPay service.
+the three provided synthetic assignment requests through HTTPS. It does not
+require an existing RecargaPay service.
 
 Use only a dedicated AWS sandbox account and synthetic data. SQLite over EFS is
 an experimental packaging bridge with bounded concurrency, not an authoritative
@@ -180,7 +180,7 @@ semantics.
 ## Verify
 
 ```bash
-uv run --frozen pytest
+uv run --frozen pytest -W error
 uv run --frozen ruff check src tests
 uv build
 ```
