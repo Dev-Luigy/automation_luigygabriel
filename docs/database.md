@@ -234,8 +234,12 @@ cannot produce two decisions.
 
 ## Immutability and durability
 
-SQLite is configured with foreign keys, WAL, busy timeout, and
-`synchronous=FULL`. Database triggers prevent update/delete of:
+SQLite is configured with foreign keys, a validated journal mode, busy timeout,
+and `synchronous=FULL`. Local execution defaults to WAL. The AWS assessment
+sandbox explicitly selects rollback journal `DELETE` because SQLite WAL does
+not support a network filesystem. That selection does **not** make SQLite/EFS a
+production-safe remote database; SQLite still warns that network locking and
+sync behavior are filesystem-dependent. Database triggers prevent update/delete of:
 
 - immutable submission fields and attachment references;
 - terminal processing runs and terminal invocation attempts;

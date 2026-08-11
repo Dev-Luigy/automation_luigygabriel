@@ -47,11 +47,15 @@ for money. `BaselinePolicy` is deterministic, versioned, and explainable.
   `ETag`/`If-Match`, immutable decision, status transition, and audit event.
 - HTTP Basic/PBKDF2, CSRF, exact-origin checks, restrictive browser headers,
   HTTPS enforcement outside explicitly configured local development, and CI.
+- A tested Mangum Lambda adapter and one-command AWS SAM assessment sandbox
+  package with an HTTPS API, private VPC, encrypted/retained EFS, bounded
+  concurrency, logs, alarms, automatic sample seed, and explicit safety labels.
 
 The assessment deliberately does **not** implement receipt-byte upload or
 download, a submitter portal, a privileged audit UI, asynchronous queues, or
-AWS infrastructure. Attachment strings are references only. SQLite and HTTP
-Basic are local assessment adapters.
+the accepted production AWS infrastructure. Attachment strings are references
+only. SQLite, HTTP Basic, and the direct API Gateway/Lambda/EFS sandbox are
+assessment adapters; they are not approved financial-production components.
 
 Release gates prevent real monetary use: the caller currently supplies the
 timestamp that anchors receipt age; the caller supplies OCR text without a
@@ -134,6 +138,29 @@ curl --silent --user "$EA_REVIEW_USER:$EA_REVIEW_PASSWORD" \
 To demonstrate only the review screen with fictional cases, use a fresh
 database and run `uv run expense-agent-seed-demo` before starting the service.
 
+## Deploy the assessment sandbox on AWS
+
+The repository now contains a deliberately non-production, plug-and-play AWS
+deployment for reviewers who need a real HTTPS URL. After installing AWS CLI,
+SAM CLI, Docker, uv, and OpenSSL, run:
+
+```bash
+./deploy/aws/deploy.sh
+```
+
+The script validates and builds the Lambda artifact in the AWS Python 3.12
+x86_64 build container, deploys API Gateway/Lambda/VPC/EFS through
+CloudFormation, prompts for a reviewer password without echoing it, and seeds
+the three public assignment requests through HTTPS. It does not require an
+existing RecargaPay service.
+
+Use only a dedicated AWS sandbox account and synthetic data. SQLite over EFS is
+an experimental packaging bridge with bounded concurrency, not an authoritative
+financial database or a million-request design. The accepted production target
+still requires Aurora/outbox, Cognito/BFF, private versioned S3 evidence,
+SQS/DLQ workers, CloudFront/WAF, object authorization, and the documented
+governance/recovery gates. See the complete [AWS sandbox runbook](deploy/aws/README.md).
+
 ## API summary
 
 | Method | Path | Purpose |
@@ -158,16 +185,22 @@ uv run --frozen ruff check src tests
 uv build
 ```
 
-The final local quality run passed **140/140 tests with warnings treated as
-errors**, Ruff, JavaScript syntax validation, and `git diff --check`. The GitHub
+The final local quality run passed **151/151 tests with warnings treated as
+errors**, Ruff, JavaScript syntax validation, and `git diff --check`. The SAM
+template passed `sam validate --lint`; the x86_64 ZIP built successfully in the
+AWS Python 3.12 build container and imported inside the matching Lambda runtime;
+ShellCheck passed for the deployment script. The GitHub
 Actions workflow uses commit-pinned actions, a frozen lockfile, and pinned
 build-system dependencies; it runs tests, Ruff, and sdist/wheel build on every
 push and pull request. Dependabot monitors both Python and Actions dependencies.
 
 ## Documentation
 
-Start at the [documentation index](docs/README.md). The
-[final report](docs/final-report.md) summarizes requirements, decisions,
+Start at the [documentation index](docs/README.md), use the
+[central diagram gallery](docs/diagrams.md) for the status-labeled system views,
+and read the [final report](docs/final-report.md) for requirements, decisions,
 evidence, trade-offs, and honest production gaps. The accepted AWS hybrid
-serverless architecture remains a documented target only; no cloud resources
-or IaC are present in this repository.
+serverless **production** architecture remains a documented target only. The
+repository includes deployable SAM IaC for the restricted assessment sandbox,
+but no AWS account was mutated and no production Cognito, Aurora, S3 evidence,
+SQS, outbox, WAF, or CloudFront resource is claimed.

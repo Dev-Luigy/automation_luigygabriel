@@ -25,9 +25,10 @@ flowchart LR
     Human --> Decision["Reviewer + rationale + atomic v4"]
 ```
 
-The code-assessment path is implemented and locally executable. The accepted
-AWS hybrid serverless production topology is documented but deliberately not
-claimed as deployed.
+The code-assessment path is implemented and locally executable. A restricted
+AWS SAM sandbox is packaged and locally validated for synthetic demonstration,
+but no AWS account was mutated. The accepted AWS hybrid serverless production
+topology is documented and deliberately not claimed as implemented or deployed.
 
 ## Requirements and implementation result
 
@@ -44,6 +45,7 @@ claimed as deployed.
 | User access to results | Exact all-status API is implemented; reviewer web UI is implemented. Submitter and privileged audit UIs remain absent. |
 | Original receipt file | Not implemented: attachment values are references, not uploaded/authorized bytes. |
 | High-volume navigation | Server-side search/filter/sort and signed keyset pagination are implemented; production cardinality/SLO has not been load-tested. |
+| AWS delivery | One-command SAM assessment sandbox is implemented and locally validated, not provisioned. It is explicitly separate from the unimplemented production topology. |
 
 ## Architecture
 
@@ -224,7 +226,7 @@ are not cosmetic hardening or optional future features.
 | OCR plus two LLMs for every request | Not selected without labeled accuracy/cost/latency evidence. Agreement does not prove correctness when inputs share an OCR error. |
 | One extractor plus optional verifier | Current assessment uses one offline deterministic extractor. A risk-based secondary verifier remains a future experiment, not a claim. |
 | VPS/EC2 | Not selected as the accepted default for bursty unknown production load; it creates capacity and HA operations. |
-| AWS hybrid serverless | Accepted production target because APIs/jobs are short/bursty and relational audit authority is retained. Not deployed here. |
+| AWS hybrid serverless | Accepted production target because APIs/jobs are short/bursty and relational audit authority is retained. Not implemented or deployed here; the Lambda/EFS SAM package is assessment-only. |
 | Kubernetes/EKS | Feasible but explicitly closed as a current choice: no measured long-running/GPU/platform requirement offsets cluster ownership. |
 | One NoSQL database for everything | Rejected. Financial relationships/transactions belong in SQL; receipt bytes belong in versioned object storage. |
 
@@ -233,9 +235,10 @@ The full rationale and chronological feedback are in
 
 ## Verification evidence
 
-The final local quality run passed **140/140 tests with warnings treated as
-errors**, Ruff, JavaScript syntax validation, and `git diff --check`. The suite
-covers:
+The final local quality run passed **151/151 tests with warnings treated as
+errors**, Ruff, JavaScript syntax validation, `git diff --check`, ShellCheck,
+SAM lint, an x86_64 containerized SAM build, and Lambda-runtime artifact import.
+The suite covers:
 
 - exact money and domain transitions;
 - deterministic policy rules, precedence, and amount/age boundaries;
@@ -248,6 +251,8 @@ covers:
   scoped timelines, human v3→v4 decision, immutability, and forced rollback;
 - pending queue search/filter/sort/snapshot cursors and cross-page discovery;
 - trilingual catalog parity and safe frontend rendering.
+- HTTP API v2-to-ASGI adaptation, strict AWS build pins/minimal context, sandbox
+  template safety controls, Bash syntax, and HTTPS-only synthetic seeding.
 
 The GitHub Actions workflow uses commit-pinned actions, a frozen lockfile and
 pinned build-system packages, then performs tests, Ruff, and package build on
@@ -266,6 +271,8 @@ change.
 | `8220c76` / `2352e62` | Intake/transport/identity hardening and atomic legacy migration. |
 | `b4ed985` | Pinned packaging backend and automated Python dependency updates. |
 | `2459f30` | Preserve minor-unit immutability when upgrading an existing database. |
+| `8d45af3` | Lambda adapter and configurable SQLite journal boundary. |
+| `2246ff0` | One-command SAM assessment sandbox, seed, validation, and runbook. |
 
 These are real logical milestones with normal Git timestamps; no commit was
 backdated or delayed to simulate time invested.
@@ -283,12 +290,14 @@ Proxy for the authoritative ledger/outbox, Cognito plus an opaque BFF session,
 and DynamoDB only for short-lived session/OAuth state. Immutable approved audit
 export complements—but never replaces—the relational business record.
 
-Nothing in that sentence is deployed by this repository. There is no IaC,
-Cognito, S3 byte path, SQS worker, Aurora adapter, transactional outbox, or cloud
-account evidence. Before production, accountable owners must confirm region and
-data residency, threat/authorization model, peak workload and provider limits,
-SLO/RPO/RTO, retention/legal hold/deletion, accuracy thresholds, cost, and
-incident/recovery operations.
+Nothing in that sentence is deployed or implemented as the production system.
+The repository now has assessment-only SAM IaC for direct API Gateway,
+Lambda, and SQLite/EFS, but there is no Cognito/BFF, S3 evidence path, SQS
+worker/DLQ, Aurora adapter, transactional outbox/exporter, CloudFront/WAF edge,
+or cloud-account evidence. Before production, accountable owners must confirm
+region and data residency, threat/authorization model, peak workload and
+provider limits, SLO/RPO/RTO, retention/legal hold/deletion, accuracy
+thresholds, cost, and incident/recovery operations.
 
 ## Recommended next steps
 
@@ -301,16 +310,18 @@ incident/recovery operations.
 4. Add asynchronous idempotent processing, retry/DLQ/replay and abandoned-run
    recovery.
 5. Implement PostgreSQL/outbox and managed identity/authorization adapters.
-6. Provision reviewed AWS IaC only after the open governance and capacity inputs
-   are owned; then load, security, backup/restore, and disaster-recovery test it.
+6. Implement and provision reviewed AWS **production** IaC only after the open
+   governance and capacity inputs are owned; then load, security, backup/restore,
+   and disaster-recovery test it. Do not promote the SQLite/EFS sandbox.
 
 ## Time invested
 
-Earlier exploration and implementation were not timed precisely, so this report
-does not fabricate a total. The final completion block began at
-`2026-08-10T19:47:09Z`; its real finish time and duration are recorded in
-[time-log.md](time-log.md). Historical untimed areas remain explicitly marked
-`estimate required`.
+The user reports approximately **10 hours total** invested across the project.
+The final completion block was measured precisely from
+`2026-08-10T19:47:09Z` to `2026-08-10T20:27:38Z` (`40m 29s`) and is included
+inside that rough total, not added to it. Historical work areas were not timed
+individually and remain explicitly marked `estimate required` in
+[time-log.md](time-log.md), avoiding fabricated per-activity durations.
 
 ## Conclusion
 
@@ -318,6 +329,7 @@ The assessment demonstrates the core financial safety properties requested:
 deterministic decisions, exact money, explicit ambiguity handling, durable
 idempotency, per-attempt traceability, atomic human judgment, and honest
 separation between implemented local behavior and a future production stack.
-Its most important remaining gap is not another LLM—it is the production
-evidence, identity/authorization, asynchronous operations, and governance path
-around the working core.
+The deployable sandbox makes review easier without changing that boundary. Its
+most important remaining gap is not another LLM—it is the production evidence,
+identity/authorization, asynchronous operations, durable PostgreSQL/outbox, and
+governance path around the working core.

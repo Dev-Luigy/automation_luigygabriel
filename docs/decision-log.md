@@ -61,6 +61,7 @@ Status meanings:
 | D-045 | Persist the v1→v3 workflow through short transactions and immutable one-to-many invocation attempts. | accepted and implemented |
 | D-046 | Provide strict authenticated intake and safe all-status lookup with request-ID plus fingerprint idempotency. | accepted and implemented |
 | D-047 | Describe current audit honestly as processing/decision traceability and block production until all-operation coverage exists. | accepted release gate |
+| D-048 | Package a one-command AWS assessment sandbox without redefining the production target. | accepted and implemented artifact; not provisioned |
 
 ## D-001 - Deterministic financial authority
 
@@ -1094,6 +1095,62 @@ redaction, retention/access controls, correlation/sequence semantics, immutable
 export, monitoring, and verification. Operational infrastructure logs may
 corroborate this ledger but cannot replace business identity, reason, policy,
 and evidence facts.
+
+## D-048 - One-command AWS assessment sandbox
+
+**Status:** Accepted and implemented as a locally validated artifact; not
+provisioned.
+
+**Question:** How can an evaluator run the existing assessment on AWS with the
+fewest manual steps without presenting assessment adapters as production
+architecture or creating resources in an unknown account?
+
+**Decision:** Provide a SAM deployment sandbox that packages the existing
+FastAPI service as a Python 3.12 x86_64 Lambda through Mangum, exposes it through
+an HTTP API, and mounts encrypted EFS for the assessment SQLite file. Create two
+private subnets and security groups, enable EFS backups and retention, cap
+Lambda reserved concurrency at four, retain 14-day sanitized API/Lambda logs,
+enable X-Ray, and add error/throttle alarms. Keep the deterministic extractor,
+HTTP Basic/PBKDF2, same-origin CSRF controls, and direct `execute-api` HTTPS URL.
+Do not add NAT or a live model provider. Seed only the three synthetic assignment
+examples after deployment.
+
+`deploy/aws/deploy.sh` checks local prerequisites and AWS identity, asks for an
+explicit billable-resource confirmation, reads the review password without
+echo, passes only its PBKDF2 hash and a generated CSRF secret through NoEcho
+parameters, prepares an exact-pinned minimal dependency context, validates,
+builds in the official Lambda-compatible container, deploys, and seeds through
+the public HTTPS API.
+
+**Alternatives considered:** An EC2/EBS host would fit SQLite locking better but
+would abandon the requested serverless path and add host operations. App Runner
+or Fargate would still require a durable database and more infrastructure. The
+accepted Aurora/Cognito/S3/SQS/CloudFront production topology cannot honestly be
+made plug-and-play until its application adapters and governance inputs exist.
+Lambda plus EFS is therefore limited to a reproducible evaluation sandbox.
+
+**Rationale:** This preserves the current executable behavior and gives an
+evaluator one command while keeping the production plan and its release gates
+explicit. Python 3.12 is required because the Lambda Python 3.11 image exposed
+an SQLite version too old for the schema's partial index.
+
+**Consequences and trade-offs:** SQLite over EFS/NFS can still suffer locking,
+latency, and corruption failure modes; rollback journal `DELETE` only avoids the
+known WAL incompatibility. Reserved concurrency four is a browser-demo bound,
+not evidence of scale. HTTP Basic is not production identity/authorization.
+Stack deletion retains EFS by design, so it can continue to incur charges and
+requires separately authorized removal. No real receipt or monetary data is
+allowed, and D-026/D-039/D-040/D-042 remain the production target.
+
+**Evidence:** 151 tests with warnings as errors, Ruff, JavaScript syntax,
+ShellCheck, SAM lint, a containerized x86_64 SAM build, and import/schema
+initialization in the matching Lambda Python 3.12 runtime pass locally. No live
+stack, EFS recovery, load, security, or account-level test has been performed,
+and no AWS resource was created.
+
+**Affected code and documentation:** `lambda_handler.py`, configurable SQLite
+journal mode, `deploy/aws/`, AWS deployment tests, the AWS runbook, architecture,
+database, feature, diagram, final-report, journal, assumption, and time records.
 
 ## Decision template
 

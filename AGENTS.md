@@ -108,10 +108,15 @@ or architecture action in this repository.
   A non-technical employee upload/tracking portal and controlled audit/admin UI
   are still standalone product surfaces to build; do not represent the JSON API
   alone as those user experiences.
-- SQLite and HTTP Basic are assessment adapters. A production deployment still
-  needs its standalone highly available datastore and managed OIDC service.
-- The AWS hybrid serverless topology is the accepted production target, but no
-  infrastructure-as-code, cloud adapter, account, or deployment exists here.
+- SQLite, HTTP Basic, and the direct API Gateway/Lambda/EFS deployment are
+  assessment adapters. The repository includes a locally validated, still
+  unprovisioned SAM sandbox; it is not the accepted production deployment and
+  must use synthetic data only. SQLite on EFS/NFS remains unsafe for production
+  even with rollback journal mode and bounded concurrency.
+- The AWS hybrid serverless topology is the accepted production target, but its
+  Aurora/outbox, Cognito/BFF authorization, S3 evidence, SQS/DLQ workers, and
+  CloudFront/WAF adapters are not implemented or deployed. No AWS account was
+  mutated while preparing the sandbox.
   `sa-east-1` remains a cost/data-residency assumption rather than a confirmed
   region. Do not select a retention duration, enable automated deletion, enable
   Object Lock Compliance mode, require a VPN, or claim a production SLO until

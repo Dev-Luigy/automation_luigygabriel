@@ -1,11 +1,14 @@
 # Time log
 
-The assignment asks for a rough estimate of time invested. This file should be
-updated during the remaining work so the final number is based on recorded time
-rather than reconstructed memory.
+The assignment asks for a rough estimate of time invested. The user reports
+approximately **10 hours total** across the project. This is a rough,
+self-reported project total rather than a reconstruction from Git history.
 
-Earlier exploration was not timed precisely, so it is labeled `estimate
-required` instead of assigning fabricated values.
+The precisely measured `40m 29s` final completion block below is a subset of
+that approximately 10-hour total. It must not be added again: the reporting
+total is approximately 10 hours, not 10 hours and 40 minutes. Earlier work was
+not timed precisely, so individual historical rows remain labeled `estimate
+required` instead of receiving fabricated durations.
 
 | Date | Work area | Started | Finished | Duration | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -29,7 +32,8 @@ required` instead of assigning fabricated values.
 | 2026-08-10 | Live local demonstration | not recorded | not recorded | estimate required | Seeded a disposable fictional database, started the assessment service, worked around embedded-browser HTTP Basic caching with a localhost-only temporary gateway, and visually verified queue, evidence detail, and business timeline without console errors; recorded J-019. |
 | 2026-08-10 | Kubernetes provisioning feasibility | not recorded | not recorded | estimate required | Evaluated standalone Amazon EKS and worker-only hybrid shapes; recorded D-041/J-020/A-047 without changing the accepted D-026 AWS serverless target. |
 | 2026-08-10 | Serverless confirmation and completion audit | not recorded | not recorded | estimate required | Closed Kubernetes as a current option, reaffirmed D-026 in D-042/J-021, compared the executable with the complete assignment, and recorded the remaining engineering and user-delivery inputs in J-022/A-048. |
-| 2026-08-10 | End-to-end assessment completion and final documentation | 16:47:09 -03 | 17:27:38 -03 | 40m 29s | Real continuous window (`2026-08-10T19:47:09Z`–`2026-08-10T20:27:38Z`): policy/extractors, acceptance/CI, workflow persistence, intake/results, hardening, final documentation, and final 140-test/Ruff/JavaScript/diff/build verification. No Git timestamps or earlier durations were fabricated. |
+| 2026-08-10 | End-to-end assessment completion and final documentation | 16:47:09 -03 | 17:27:38 -03 | 40m 29s | Real continuous window (`2026-08-10T19:47:09Z`–`2026-08-10T20:27:38Z`): policy/extractors, acceptance/CI, workflow persistence, intake/results, hardening, documentation, and then-current 140-test/Ruff/JavaScript/diff/build verification. No Git timestamps or earlier durations were fabricated. |
+| 2026-08-11 | AWS assessment sandbox packaging and diagram consolidation | not recorded | not recorded | estimate required | Added Mangum, Python 3.12 Lambda packaging, SAM API/VPC/EFS/log/alarm IaC, one-command deployment and HTTPS seed scripts, the central diagram gallery, and updated boundaries. Final evidence reached 151 tests plus SAM lint/build/runtime import and ShellCheck. No AWS resource was provisioned. |
 
 ## Entry template
 
@@ -37,10 +41,11 @@ required` instead of assigning fabricated values.
 | YYYY-MM-DD | Work area | HH:MM | HH:MM | Nh Nm | Outcome and relevant decision IDs |
 ```
 
-## Honest recorded-time summary
+## Honest time summary
 
-| Category | Recorded total |
+| Category | Reporting value |
 | --- | ---: |
-| Final end-to-end completion block | 40m 29s |
-| Earlier discovery, design, implementation, QA, and documentation | not measured; estimate required |
-| **Honest known total** | **at least 40m 29s, plus unrecorded earlier work** |
+| User-reported total project effort | approximately 10h |
+| Precisely measured completion subset included in that total | 40m 29s |
+| Historical remainder | not independently measured; individual rows remain `estimate required` |
+| **Reporting total** | **approximately 10h, not 10h 40m 29s** |

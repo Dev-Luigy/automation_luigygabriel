@@ -11,6 +11,43 @@ Prices are a 2026-08-10 snapshot in USD before tax, exchange rate, enterprise
 discounts, support, or free-tier credits. They are useful for comparing designs,
 not as a purchasing quote.
 
+## Runnable assessment sandbox — not the production target
+
+The repository now includes a one-command AWS SAM package for demonstrating the
+current assessment through a real AWS HTTPS URL:
+
+```bash
+./deploy/aws/deploy.sh
+```
+
+The script creates a minimal build context, validates SAM, builds the x86_64
+Python 3.12 Lambda ZIP in the AWS build container, deploys CloudFormation, and
+optionally submits the three public examples through HTTPS. The stack describes
+API Gateway HTTP API, one Mangum/FastAPI Lambda, two private subnets without NAT,
+encrypted EFS with two mount targets and an access point, 14-day logs, X-Ray,
+and error/throttle alarms. EFS backup is enabled and the filesystem is retained
+on stack deletion.
+
+This is an **implemented and locally validated deployment artifact, not a
+provisioned stack**. No AWS credentials/account were available or used and no
+cloud resource was created. Validation covered 151 tests, Ruff, JavaScript,
+ShellCheck, `sam validate --lint`, an x86_64 containerized `sam build`, and import
+of the built artifact inside the matching Lambda Python 3.12 runtime.
+
+The sandbox is synthetic-data-only. It retains HTTP Basic, synchronous work,
+global reviewer scope, attachment references, and SQLite. SQLite rollback
+journal `DELETE` removes WAL's direct network-filesystem incompatibility but
+does not make EFS/NFS locking and sync reliable enough for a financial ledger.
+Reserved concurrency four merely keeps the current browser usable while bounding
+the experiment; it is not a scalability or durability result. The full
+[sandbox runbook](../deploy/aws/README.md) documents prerequisites, overrides,
+inspection, retained-EFS cleanup, cost warning, and production migration gates.
+
+This package does not supersede the accepted target below. It exists to make
+the assessment easy to inspect without pretending that Aurora, Cognito, S3
+evidence, SQS, CloudFront/WAF, an outbox, or production authorization already
+exists.
+
 ## Accepted target
 
 Use this hybrid serverless design for the first production deployment:

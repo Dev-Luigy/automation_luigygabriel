@@ -17,7 +17,8 @@
 | Human decision | Implemented | Individual approve/reject, mandatory rationale, identity, concurrency, atomic audit. |
 | Trilingual reviewer UI | Implemented | `pt-BR`, `en`, `es`; source evidence is not translated. |
 | Submitter and audit/admin UIs | Not implemented | Intake/result exist as APIs; no upload/tracking or privileged trace UI. |
-| AWS serverless deployment | Accepted target only | No IaC or cloud resources. |
+| AWS assessment sandbox | Implemented and locally validated; not provisioned | SAM packages HTTP API, Lambda, private VPC, encrypted/retained EFS, logs/alarms, and synthetic seed. SQLite/EFS and Basic remain non-production. |
+| AWS production deployment | Accepted target only | No Cognito/BFF, Aurora/outbox, S3 evidence, SQS/DLQ, WAF, or CloudFront adapter/resource. |
 
 ## Baseline policy behavior
 
@@ -205,7 +206,7 @@ sequenceDiagram
     R->>UI: outcome + rationale
     UI->>API: POST decision + CSRF + Origin + If-Match
     API->>S: canonical authenticated identity
-    S->>DB: BEGIN IMMEDIATE; verify pending/v3
+    S->>DB: BEGIN IMMEDIATE, verify pending/v3
     DB->>DB: decision + review/status v4 + audit event
     DB-->>S: commit
     S-->>API: result + audit ID
@@ -258,8 +259,9 @@ four-eyes, revocation, and access audit are production work.
 
 ## Verification evidence
 
-The final local run passed **140/140 tests with warnings treated as errors**,
-Ruff, JavaScript syntax validation, and `git diff --check`. Coverage includes:
+The final local run passed **151/151 tests with warnings treated as errors**,
+Ruff, JavaScript syntax validation, `git diff --check`, ShellCheck, SAM lint,
+containerized x86_64 SAM build, and Lambda-runtime artifact import. Coverage includes:
 
 - value objects, aggregate state machine, policy routes/precedence/boundaries;
 - the exact three assignment objects and their expected extraction/routes;
@@ -273,6 +275,10 @@ Ruff, JavaScript syntax validation, and `git diff --check`. Coverage includes:
   all-status lookup, and no-provider-secret leakage;
 - queue filters/sorts/cursors, cross-page discovery, timeline cursors,
   concurrency, immutable rows, localization parity, and safe frontend code.
+- Lambda HTTP API v2 adaptation, selectable rollback journal for the sandbox
+  EFS constraint,
+  exact Lambda dependency pins, minimal build context, SAM safety controls, and
+  HTTPS-only synthetic seeding.
 
 The pinned CI workflow runs a frozen install, tests, Ruff, and package build on
 push/pull request. These tests establish behavior, not production model
@@ -293,5 +299,6 @@ recovery.
 6. Evaluate provider/second-verifier accuracy, unit cost, disagreement, human-
    review rate, and P95/P99 latency on a labeled representative dataset before
    enabling live AI.
-7. Provision the accepted AWS target with reviewed IaC only after region,
-   security, data residency, retention, SLO, RPO/RTO, and cost inputs are owned.
+7. Implement and provision the accepted AWS production target with reviewed
+   IaC only after region, security, data residency, retention, SLO, RPO/RTO, and
+   cost inputs are owned. The current SAM sandbox is not that target.

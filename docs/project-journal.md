@@ -876,6 +876,99 @@ fabricated durations.
 A-042, A-048 through A-053, the executable README, system documentation, final
 report, and time log.
 
+## 2026-08-11 - J-024 - Reported effort and diagram/deployment follow-up
+
+**Status:** Superseded by J-025 for the deployment artifact. This entry records
+the implementation boundary before the sandbox was built.
+
+**Question:** How should the user's approximately 10-hour estimate and request
+for diagrams and deployment follow-up be recorded without overstating measured
+time or implying an AWS implementation decision?
+
+**User input:** The user reports approximately 10 hours total across the
+project and requested a central view of the diagrams together with deployment
+and sandbox follow-up.
+
+**Recording decision:** Treat approximately 10 hours as a rough, user-reported
+total. The exactly measured `40m 29s` completion block is contained within that
+estimate and must not be added again. Historical activities remain individually
+unmeasured rather than receiving reconstructed durations.
+
+**Documentation action at that point:** Add a central, English diagram gallery
+that consolidates the implemented assessment, lifecycle, summarized data model,
+processing sequence, review/audit flow, and the already accepted AWS production
+target. The sandbox was still represented as a clearly labeled `pending
+implementation` delivery placeholder; J-025 records its later implementation.
+
+**Deployment boundary at that point:** This record did not choose an AWS account, region,
+network, infrastructure-as-code tool, credentials, identity configuration,
+database capacity, buckets, queues, DNS, or sandbox implementation. It does not
+authorize cloud mutations. A later implementation step requires explicit scope,
+authority, prerequisites, and review. D-026 and D-042 remain unchanged.
+
+**Affected records:** A-054, `docs/time-log.md`, `docs/final-report.md`,
+`docs/diagrams.md`, and the documentation indexes.
+
+## 2026-08-11 - J-025 - Plug-and-play AWS assessment sandbox
+
+**Question:** After reaffirming the AWS serverless direction, can the current
+repository be made easy to run on Amazon without presenting SQLite/Basic as the
+financial-production architecture?
+
+**User direction:** Record approximately 10 hours as the rough project total,
+provide AWS installation instructions, make the result as plug and play as
+possible, and include the remaining diagrams.
+
+**Options examined:** A faithful single EC2/EBS sandbox would keep SQLite on
+local block storage but would diverge from the selected serverless direction
+and require a separate safe HTTPS termination design. App Runner is unsuitable
+for durable SQLite; Fargate/EFS repeats the network-filesystem issue. A direct
+HTTP API/Lambda/EFS package follows the requested runtime shape and gets an AWS
+managed HTTPS endpoint, but SQLite over NFS is not an acceptable authoritative
+ledger. The full CloudFront/Cognito/S3/SQS/Aurora target cannot be produced by
+IaC alone because the corresponding application adapters are intentionally
+missing.
+
+**Decision:** Add AWS SAM only as an explicit synthetic-data assessment
+sandbox. Keep D-026/D-039/D-040/D-042 as the production target. Do not provision
+an AWS account from this task and do not claim production readiness. The
+sandbox uses API Gateway HTTP API, Python 3.12 Lambda through Mangum, a new
+private VPC with two subnets, encrypted/backed-up/retained EFS, rollback journal
+`DELETE`, bounded concurrency four, 14-day sanitized logs, X-Ray, and
+error/throttle alarms. HTTP Basic/PBKDF2 and application CSRF/Origin checks stay
+inside the assessment.
+
+**Automation:** `deploy/aws/deploy.sh` checks prerequisites and AWS identity,
+prompts before billable resources, reads a password without echo, sends only its
+PBKDF2 hash to NoEcho CloudFormation parameters, generates the CSRF secret,
+prepares a minimal pinned build context, runs SAM lint/build/deploy, reads the
+stack URL, and seeds the three public assignment objects through the HTTPS API.
+EFS is retained on stack deletion so cleanup cannot silently destroy the SQLite
+evidence; the runbook calls out continuing charges and manual authorization.
+
+**Validation finding:** A direct container smoke exposed that the AWS Lambda
+Python 3.11 base carried SQLite too old for the partial index in the schema. The
+package moved to Lambda Python 3.12/SQLite 3.40, and SAM's custom image path was
+replaced with a reproducible x86_64 ZIP built in the official Python 3.12 build
+container. The final evidence is 151 tests with warnings as errors, Ruff,
+JavaScript syntax, diff checks, ShellCheck, SAM lint, a successful x86_64 SAM
+build, and import/schema initialization inside the matching Lambda runtime.
+No live stack test or EFS recovery test was run, and no AWS resource was
+provisioned.
+
+**Production consequence:** `DELETE` journal avoids the direct WAL limitation
+but does not make SQLite over EFS/NFS safe. Four concurrent environments exist
+only to let current browser asset/detail requests function; it is not a scale
+claim. Real monetary or receipt data remains forbidden until Aurora/outbox,
+Cognito/BFF and authorization, S3 evidence, SQS/DLQ workers, CloudFront/WAF,
+complete audit, retention, load, security, backup, and recovery gates are built
+and approved.
+
+**Affected records:** D-048, A-043, A-048, A-054, A-055, the AWS runbook and SAM
+assets, architecture/features/database documents, central diagram gallery,
+final report, README, and time log. Implementation commits are `8d45af3` and
+`2246ff0`.
+
 ## Entry template
 
 ```text

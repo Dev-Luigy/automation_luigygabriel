@@ -212,6 +212,32 @@ has the same effective scope; there is no role/team/case authorization,
 four-eyes constraint, session revocation, MFA, account lifecycle, attachment-
 object authorization, or protected technical-trace API.
 
+## AWS assessment sandbox — packaged, not provisioned
+
+```mermaid
+flowchart LR
+    Browser["Reviewer browser"] -->|"HTTPS + Basic"| Gateway["API Gateway HTTP API"]
+    Gateway --> Lambda["Python 3.12 Lambda\nMangum + FastAPI"]
+    Lambda --> EFS["Encrypted retained EFS\nSQLite journal DELETE"]
+    Lambda --> Observability["CloudWatch logs/alarms + X-Ray"]
+    SAM["SAM + minimal pinned build context"] --> Gateway
+    SAM --> Lambda
+    SAM --> EFS
+```
+
+The repository includes a one-command SAM deployment for synthetic assessment
+use. Its template, x86_64 build artifact, shell script, and Lambda import are
+locally validated; no AWS account or stack was mutated. API Gateway supplies a
+direct HTTPS origin. Lambda runs with bounded concurrency in two private
+subnets, while EFS persists the SQLite file through an access point.
+
+This bridge is not production persistence. SQLite warns about remote filesystem
+locking/sync behavior; `DELETE` journal removes the literal WAL incompatibility
+but not the NFS risk. Basic authentication, global reviewer scope, synchronous
+processing, attachment references, and lack of live load/restore evidence keep
+the sandbox outside the financial-production trust boundary. See the
+[sandbox runbook](../deploy/aws/README.md).
+
 ## Accepted AWS production target — not implemented
 
 ```mermaid
@@ -244,11 +270,13 @@ adapters and synchronous execution:
 | Attachment reference string | Private versioned S3 object, SHA-256/version/media/scan metadata, authorized access audit. |
 | DB-only audit | Transactional outbox plus approved immutable export; CloudTrail/observability are complementary. |
 
-No CloudFormation, CDK, Terraform, Serverless Framework, Cognito pool, Lambda,
-SQS queue, Aurora cluster, S3 bucket, or cloud deployment exists in this
-repository. Region, account/network layout, workload, SLO, RPO/RTO, retention,
-legal hold, provider approval, and production cost still require accountable
-validation. Kubernetes/EKS was evaluated and explicitly not selected.
+No production Cognito pool/BFF, SQS queue, Aurora cluster/repository, receipt S3
+store, CloudFront/WAF edge, outbox/exporter, DNS, or provisioned cloud resource
+exists in this repository. The SAM assessment sandbox above is deliberately not
+the production IaC described here. Region, account/network layout, workload,
+SLO, RPO/RTO, retention, legal hold, provider approval, and production cost
+still require accountable validation. Kubernetes/EKS was evaluated and
+explicitly not selected.
 
 ## Repository map
 
@@ -256,13 +284,14 @@ validation. Kubernetes/EKS was evaluated and explicitly not selected.
 expense-agent/
 ├── .github/workflows/ci.yml
 ├── examples/sample_requests.json
+├── deploy/aws/                    # non-production SAM sandbox and runbook
 ├── src/expense_agent/
 │   ├── domain/                 # deterministic financial model and policy
 │   ├── application/            # processing/review use cases and ports
 │   ├── infrastructure/
 │   │   ├── extraction/         # offline and optional HTTPS+JSON adapters
 │   │   └── review/             # SQLite workflow/review repository
-│   └── presentation/           # FastAPI, security, static review UI, CLIs
-├── tests/                       # domain, adapter, integration, API, acceptance
+│   └── presentation/           # FastAPI, Lambda adapter, security, UI, CLIs
+├── tests/                       # domain, adapter, integration, API, AWS assets
 └── docs/                        # architecture, decisions, evidence, report
 ```
