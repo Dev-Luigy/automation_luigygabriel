@@ -531,10 +531,14 @@ _EVENT_CURSOR_CONTEXT = b"expense-agent:review-business-events:v1"
 class SqliteReviewRepository:
     """SQLite repository with optimistic versions and serialized review writes."""
 
-    def __init__(self, database_path: str | Path) -> None:
+    def __init__(self, database_path: str | Path, *, journal_mode: str = "WAL") -> None:
         self.database_path = Path(database_path)
         if str(self.database_path) == ":memory:":
             raise ValueError("use a file-backed SQLite database for the review repository")
+        normalized_journal_mode = journal_mode.strip().upper()
+        if normalized_journal_mode not in {"WAL", "DELETE"}:
+            raise ValueError("journal_mode must be WAL or DELETE")
+        self.journal_mode = normalized_journal_mode
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.initialize_schema()
 
@@ -2172,7 +2176,10 @@ class SqliteReviewRepository:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA journal_mode = WAL")
+        if self.journal_mode == "WAL":
+            connection.execute("PRAGMA journal_mode = WAL")
+        else:
+            connection.execute("PRAGMA journal_mode = DELETE")
         connection.execute("PRAGMA synchronous = FULL")
         return connection
 

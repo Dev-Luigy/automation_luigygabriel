@@ -16,6 +16,7 @@ from expense_agent.presentation.security import (
 @dataclass(frozen=True, slots=True)
 class ReviewWebSettings:
     database_path: Path
+    sqlite_journal_mode: str
     reviewers: tuple[ReviewerCredential, ...]
     csrf_secret: str
     require_https: bool
@@ -46,6 +47,14 @@ class ReviewWebSettings:
             raise SecurityConfigurationError(
                 "allowed hosts must be explicit and must not contain a bare wildcard"
             )
+        sqlite_journal_mode = os.environ.get(
+            "EXPENSE_AGENT_SQLITE_JOURNAL_MODE",
+            "WAL",
+        ).strip().upper()
+        if sqlite_journal_mode not in {"WAL", "DELETE"}:
+            raise SecurityConfigurationError(
+                "EXPENSE_AGENT_SQLITE_JOURNAL_MODE must be WAL or DELETE"
+            )
         try:
             port = int(os.environ.get("EXPENSE_AGENT_PORT", "8000"))
         except ValueError as exc:
@@ -62,6 +71,7 @@ class ReviewWebSettings:
             )
         return cls(
             database_path=database_path,
+            sqlite_journal_mode=sqlite_journal_mode,
             reviewers=load_reviewer_credentials(reviewer_json),
             csrf_secret=csrf_secret,
             require_https=_environment_bool("EXPENSE_AGENT_REQUIRE_HTTPS", default=True),

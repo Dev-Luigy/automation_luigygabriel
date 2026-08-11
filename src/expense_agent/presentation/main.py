@@ -15,7 +15,10 @@ from expense_agent.presentation.security import BasicAuthenticator, CsrfProtecto
 
 def create_environment_app() -> FastAPI:
     settings = ReviewWebSettings.from_environment()
-    repository = SqliteReviewRepository(settings.database_path)
+    repository = SqliteReviewRepository(
+        settings.database_path,
+        journal_mode=settings.sqlite_journal_mode,
+    )
     return create_app(
         review_service=ReviewService(repository),
         processing_service=ProcessingService(

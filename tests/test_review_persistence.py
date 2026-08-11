@@ -383,3 +383,18 @@ def test_human_decisions_and_audit_events_are_database_immutable(tmp_path) -> No
             pytest.raises(sqlite3.IntegrityError),
         ):
             connection.execute(statement)
+
+
+def test_repository_can_select_delete_journal_for_sandbox_compatibility(tmp_path) -> None:
+    database_path = tmp_path / "network-compatible.db"
+
+    repository = SqliteReviewRepository(database_path, journal_mode="delete")
+
+    assert repository.journal_mode == "DELETE"
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+def test_repository_rejects_unsupported_journal_mode(tmp_path) -> None:
+    with pytest.raises(ValueError, match="journal_mode must be WAL or DELETE"):
+        SqliteReviewRepository(tmp_path / "invalid.db", journal_mode="MEMORY")
