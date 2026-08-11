@@ -23,8 +23,8 @@ from expense_agent.domain.extraction import ExtractionResult, ExtractionStatus, 
 from expense_agent.domain.reimbursement import ReimbursementSubmission
 from expense_agent.domain.value_objects import Currency, Money
 
-BASELINE_POLICY_VERSION = "baseline-v2"
-BASELINE_RULE_VERSION = "1.1.0"
+BASELINE_POLICY_VERSION = "baseline-v3"
+BASELINE_RULE_VERSION = "1.2.0"
 
 AUTO_APPROVAL_LIMIT = Decimal("200.00")
 HIGH_VALUE_LIMIT = Decimal("2000.00")
@@ -77,6 +77,8 @@ class BaselinePolicy:
 
         facts = extraction.facts
         extraction_succeeded = extraction.status is ExtractionStatus.SUCCEEDED
+
+        self._evaluate_attachment_presence(submission, add_reason, evaluations)
 
         if not extraction_succeeded:
             add_reason(
@@ -178,6 +180,37 @@ class BaselinePolicy:
             policy_version=self.policy_version,
             reasons=tuple(reasons.values()),
             rule_evaluations=tuple(evaluations),
+        )
+
+    def _evaluate_attachment_presence(
+        self,
+        submission: ReimbursementSubmission,
+        add_reason: _ReasonCollector,
+        evaluations: list[RuleEvaluation],
+    ) -> None:
+        attachment_count = len(submission.attachments)
+        if attachment_count:
+            evaluations.append(
+                self._evaluation(
+                    "receipt-evidence-present",
+                    RuleOutcome.PASS,
+                    "At least one receipt evidence reference is attached.",
+                    attachment_count=str(attachment_count),
+                )
+            )
+            return
+        add_reason(
+            "MISSING_RECEIPT_EVIDENCE",
+            "A reimbursement without receipt evidence cannot be auto-approved.",
+            attachment_count="0",
+        )
+        evaluations.append(
+            self._evaluation(
+                "receipt-evidence-present",
+                RuleOutcome.REVIEW,
+                "No receipt evidence reference is attached.",
+                attachment_count="0",
+            )
         )
 
     def _evaluate_currency(

@@ -32,6 +32,7 @@ def submission(
     amount: str = "93.50",
     category: str = "meals",
     submitted_at: datetime = SUBMITTED_AT,
+    attachments: tuple[str, ...] = ("receipt.jpg",),
 ) -> ReimbursementSubmission:
     return ReimbursementSubmission(
         request_id=request_id,
@@ -40,7 +41,7 @@ def submission(
         raw_ocr_text=f"TOTAL R$ {amount}",
         claimed_category=category,
         claimed_amount=Money.brl(amount),
-        attachments=(AttachmentReference("receipt.jpg"),),
+        attachments=tuple(AttachmentReference(item) for item in attachments),
     )
 
 
@@ -219,6 +220,7 @@ def test_extraction_failure_routes_to_review_and_still_traces_every_rule() -> No
     assert decision.route is PolicyDecisionRoute.HUMAN_REVIEW
     assert "EXTRACTION_FAILED" in {reason.code for reason in decision.reasons}
     assert {item.rule_id for item in decision.rule_evaluations} == {
+        "receipt-evidence-present",
         "receipt-extraction-quality",
         "critical-receipt-facts",
         "supported-currency",
@@ -227,6 +229,24 @@ def test_extraction_failure_routes_to_review_and_still_traces_every_rule() -> No
         "receipt-category-matches-claim",
         "claim-amount-threshold",
     }
+
+
+def test_missing_receipt_evidence_cannot_be_auto_approved() -> None:
+    claim = submission(amount="93.50", attachments=())
+
+    decision = evaluate(claim, successful_extraction(claim))
+
+    assert decision.route is PolicyDecisionRoute.HUMAN_REVIEW
+    assert "MISSING_RECEIPT_EVIDENCE" in {
+        reason.code for reason in decision.reasons
+    }
+    evidence_rule = next(
+        item
+        for item in decision.rule_evaluations
+        if item.rule_id == "receipt-evidence-present"
+    )
+    assert evidence_rule.outcome is RuleOutcome.REVIEW
+    assert evidence_rule.facts["attachment_count"] == "0"
 
 
 def test_amount_mismatch_routes_to_human_review() -> None:
